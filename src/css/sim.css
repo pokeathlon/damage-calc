@@ -1,0 +1,284 @@
+.wrapper {
+    max-width: 1285px;
+}
+header .nav {
+    visibility: hidden;
+}
+.sim-header .nav {
+    visibility: visible;
+}
+.main-title-text {
+    top: 0;
+    margin-right: 0.3em;
+}
+#sim-format {
+    font-size: 1.2em;
+    padding: 3px;
+    position: relative;
+    top: -2px;
+}
+#tooltipText {
+    position: static;
+    display: inline-block;
+    width: 120px;
+    background-color: black;
+    margin-left: 10px;
+}
+#tooltipText::after {
+    display: none;
+}
+.poke-info {
+    width: 31em;
+    position: relative;
+}
+
+.sim-icon {
+    display: inline-block;
+    width: 40px;
+    height: 30px;
+    margin: -8px 0;
+    vertical-align: middle;
+    position: relative;
+    top: -2px;
+}
+.sim-item-icon {
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+}
+
+.sim-fusion {
+    float: none;
+    text-align: left;
+    padding: 3px;
+    margin: 1px 0 4px;
+}
+.sim-fusion > legend {
+    text-align: center;
+    border: solid 1px #aaaaaa;
+    padding: 2px;
+    cursor: pointer;
+    width: 4em;
+    border-radius: 8px;
+    margin: 0 auto;
+}
+.sim-fusion > legend:hover, .sim-fusion.sim-open > legend {
+    background-color: #ccc;
+}
+.sim-collapse {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out;
+}
+.sim-open .sim-collapse {
+    max-height: 5em;
+}
+.sim-save {
+    text-align: right;
+    margin: 2px 0 6px;
+}
+.sim-saved {
+    visibility: hidden;
+    font-size: 0.8em;
+    border-radius: 5px;
+    background-color: black;
+    color: white;
+    padding: 3px 8px;
+    margin-right: 5px;
+}
+.sim-item-button {
+    padding: 1px 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+
+.sim-box-panel {
+    clear: left;
+    width: 31em;
+    text-align: center;
+}
+.sim-box-label {
+    font-weight: bold;
+    margin: 6px 0;
+}
+.sim-box-list {
+    display: flex;
+    flex-wrap: wrap;
+    min-height: 34px;
+    text-align: left;
+}
+.sim-box-list:empty::before {
+    content: "Drag & drop Pok\00E9mon here";
+    color: gray;
+    margin: auto;
+}
+.sim-over {
+    background: #373232;
+}
+.sim-box-panel > button {
+    display: block;
+    margin: 4px 0;
+}
+.sim-box-panel > button:hover {
+    background: #722323;
+}
+.sim-box-mon {
+    display: inline-block;
+    box-sizing: border-box;
+    margin: 0 4px 4px 0;
+    cursor: pointer;
+    border: 2px solid transparent;
+    border-radius: 20%;
+}
+.sim-box-mon:hover {
+    outline: 2px solid #1abc9c;
+}
+.sim-speed-faster {
+    border-color: #7ee1ff;
+}
+.sim-speed-tie {
+    border-color: #894197;
+}
+.sim-speed-slower {
+    border-color: #1c1414;
+}
+.sim-dmg-1 {
+    background: linear-gradient(to right, #20d408 50%, transparent 0%);
+}
+.sim-dmg-2 {
+    background: linear-gradient(to right, #daff08 50%, transparent 0%);
+}
+.sim-dmg-3 {
+    background: linear-gradient(to right, transparent 50%, #ff7f16 0%);
+}
+.sim-dmg-4 {
+    background: linear-gradient(to right, transparent 50%, #dd0b0b 0%);
+}
+.sim-dmg-13 {
+    background: linear-gradient(to right, #20d408 50%, #ff7f16 0%);
+}
+.sim-dmg-14 {
+    background: linear-gradient(to right, #20d408 50%, #dd0b0b 0%);
+}
+.sim-dmg-23 {
+    background: linear-gradient(to right, #daff08 50%, #ff7f16 0%);
+}
+.sim-dmg-24 {
+    background: linear-gradient(to right, #daff08 50%, #dd0b0b 0%);
+}
+
+.sim-notes-panel {
+    text-align: center;
+    width: 27.5em;
+}
+
+.sim-frame {
+    position: absolute;
+    z-index: 3;
+    top: 500px;
+    left: 500px;
+    background: var(--fieldset-color, #F1F4F9);
+    border: 1px solid #AAA;
+    padding: 3px;
+}
+#sim-items {
+    width: 630px;
+}
+#sim-notes {
+    top: 700px;
+    left: 530px;
+}
+.sim-frame-header {
+    position: relative;
+    min-height: 30px;
+    font-size: larger;
+    font-weight: bold;
+    cursor: move;
+}
+.sim-frame-close {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 25px;
+    height: 25px;
+    background-color: red;
+    border: 1px solid black;
+    cursor: pointer;
+    color: black;
+    text-align: center;
+}
+.sim-frame-close:hover {
+    background-color: white;
+}
+.sim-frame-section {
+    font-weight: bold;
+    margin: 4px 0;
+}
+.sim-item {
+    position: relative;
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+}
+.sim-item:hover {
+    background: var(--button-hover, #cfcfcf);
+}
+.sim-item .sim-item-icon {
+    margin: 2px 4px;
+}
+.sim-item-type {
+    position: absolute;
+    top: 20px;
+    right: 0;
+    width: 30px;
+    height: 10px;
+}
+
+html.sim-dark {
+    --button-hover: black;
+}
+html.sim-dark body {
+    background: var(--background);
+}
+html.sim-dark .btn {
+    background: var(--background);
+    color: var(--text);
+    box-shadow: none;
+}
+html.sim-dark .btn:hover,
+html.sim-dark .visually-hidden:focus + .btn {
+    z-index: 10;
+    background: var(--button-hover);
+}
+html.sim-dark .visually-hidden:checked + .btn,
+html.sim-dark .visually-hidden:checked + .btn:hover {
+    font-weight: bold;
+    color: var(--text);
+    background: var(--button-selected);
+}
+html.sim-dark .visually-hidden:disabled + .btn {
+    color: var(--button-hover);
+}
+html.sim-dark .sim-fusion > legend:hover, html.sim-dark .sim-fusion.sim-open > legend {
+    background-color: var(--button-selected);
+}
+html.sim-dark .select2-container .select2-choice {
+    background: var(--background);
+    background-image: linear-gradient(#333, 70%, #1b1b1b);
+    color: var(--text);
+}
+html.sim-dark .select2-container .select2-choice .select2-arrow {
+    background: none;
+    border-left: none;
+}
+html.sim-dark .select2-dropdown-open .select2-choice {
+    box-shadow: 0 1px 0 var(--background) inset;
+    background-image: none;
+}
+html.sim-dark .select2-drop {
+    background-color: var(--background);
+    color: var(--text);
+}

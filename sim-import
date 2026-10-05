@@ -1,0 +1,240 @@
+#!/usr/bin/env node
+'use strict';
+
+const path = require('path');
+const fs = require('fs');
+const vm = require('vm');
+
+const psDir = path.resolve(process.argv[2] || '../pokemon-showdown');
+const psDist = path.resolve(psDir, 'dist');
+const clientHost = process.argv[3] || 'play.pokemonshowdown.com';
+const CLIENT_SCRIPTS = ['data/pokedex.js', 'data/items.js', 'js/battle-dex-data.js', 'js/battle-dex.js'];
+const outDir = path.resolve('dist/sim-data');
+const esbuild = require(path.resolve(psDir, 'node_modules/esbuild'));
+const {Dex} = require(path.resolve(psDir, 'dist/sim/dex'));
+const {TeamValidator} = require(path.resolve(psDir, 'dist/sim/team-validator'));
+const EXCLUDED = ['Future', 'CAP', 'LGPE', 'Pokestar'];
+const STATS = {hp: 'hp', atk: 'at', def: 'df', spa: 'sa', spd: 'sd', spe: 'sp'};
+const FLAGS = {
+	contact: 'makesContact', punch: 'isPunch', bite: 'isBite', bullet: 'isBullet',
+	sound: 'isSound', pulse: 'isPulse', slicing: 'isSlicing', wind: 'isWind',
+};
+const STUBS = {
+	'fs': `module.exports = {readdirSync: () => ${JSON.stringify(fs.readdirSync(path.join(psDist, 'data/mods')))}, existsSync: () => false};`,
+	'path': `function resolve(...parts) { let out = []; for (const part of parts) { if (part.startsWith('/')) out = []; for (const segment of part.split('/')) { if (segment === '..') out.pop(); else if (segment && segment !== '.') out.push(segment); } } return '/' + out.join('/'); }
+module.exports = {resolve, join: resolve, dirname: file => resolve(file, '..'), basename: file => file.split('/').pop(), sep: '/'};`,
+	'node:util': `module.exports = {isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b)};`,
+	'lib': `module.exports = {Utils: require(${JSON.stringify(path.join(psDist, 'lib/utils.js'))}).Utils};`,
+	'missing': `const error = new Error('Cannot find module'); error.code = 'MODULE_NOT_FOUND'; throw error;`,
+	'empty': `module.exports = {};`,
+};
+const MOVE_KEYS = [
+	'target', 'recoil', 'hasCrashDamage', 'mindBlownRecoil', 'struggleRecoil', 'willCrit', 'drain', 'priority', 'self',
+	'ignoreDefensive', 'overrideOffensiveStat', 'overrideDefensiveStat', 'overrideOffensivePokemon',
+	'overrideDefensivePokemon', 'breaksProtect', 'multihit', 'multiaccuracy',
+];
+
+fs.mkdirSync(outDir, {recursive: true});
+const formats = Dex.formats.all().filter(format => format.effectType === 'Format' && !format.team);
+const mods = new Set();
+const formatList = [];
+for (const format of formats) {
+	const ruleTable = Dex.formats.getRuleTable(format);
+	mods.add(format.mod);
+	formatList.push({
+		id: format.id,
+		name: format.name,
+		section: format.section,
+		mod: format.mod,
+		gameType: format.gameType,
+		fusion: ruleTable.has('infinitefusionmod'),
+		ability2: ruleTable.has('doubleabilitymod'),
+	});
+}
+
+async function loadClient() {
+	const context = vm.createContext({Config: {routes: {client: clientHost}}, document: {location: {protocol: 'https:'}}});
+	context.window = context.exports = context;
+	for (const script of CLIENT_SCRIPTS) {
+		const response = await fetch(`https://${clientHost}/${script}`);
+		if (!response.ok) throw new Error(`Could not download https://${clientHost}/${script}: ${response.status}`);
+		vm.runInContext(await response.text(), context, {filename: script});
+	}
+	return context.Dex;
+}
+
+function dump(mod, client) {
+	const dex = Dex.mod(mod);
+	const species = {};
+	for (const specie of dex.species.all()) {
+		if (!specie.exists || EXCLUDED.includes(specie.isNonstandard)) continue;
+		const data = {types: specie.types, bs: {}, weightkg: specie.weightkg};
+		for (const stat in STATS) data.bs[STATS[stat]] = specie.baseStats[stat];
+		if (specie.nfe) data.nfe = true;
+		if (specie.gender) data.gender = specie.gender;
+		if (specie.abilities[0]) data.abilities = {0: specie.abilities[0]};
+		if (specie.canGigantamax) data.canGigantamax = specie.canGigantamax;
+		if (specie.baseSpecies !== specie.name) data.baseSpecies = specie.baseSpecies;
+		const otherFormes = (specie.otherFormes || []).filter(forme => !EXCLUDED.includes(dex.species.get(forme).isNonstandard));
+		if (otherFormes.length) data.otherFormes = otherFormes;
+		data.icon = client.getPokemonIcon(specie.name);
+		species[specie.name] = data;
+	}
+	const moves = {'(No Move)': {bp: 0, category: 'Status', type: 'Normal'}};
+	for (const move of dex.moves.all()) {
+		if (!move.exists || EXCLUDED.includes(move.isNonstandard) || move.realMove) continue;
+		const data = {bp: move.basePower, type: move.type, category: move.category};
+		for (const key of MOVE_KEYS) {
+			if (move[key] !== undefined && move[key] !== false) data[key] = move[key];
+		}
+		if (move.secondaries) data.secondaries = true;
+		if (move.isZ) data.isZ = true;
+		if (move.isMax) data.isMax = true;
+		if (move.zMove?.basePower) data.zp = move.zMove.basePower;
+		if (move.maxMove?.basePower) data.maxPower = move.maxMove.basePower;
+		for (const flag in FLAGS) {
+			if (move.flags[flag]) data[FLAGS[flag]] = true;
+		}
+		moves[move.name] = data;
+	}
+	const items = {};
+	const text = dex.loadTextData().Items;
+	for (const item of dex.items.all()) {
+		if (!item.exists || EXCLUDED.includes(item.isNonstandard)) continue;
+		const data = {};
+		const desc = item.shortDesc || text[item.id]?.shortDesc || '';
+		const typeBoost = /^Holder's (?:first successful )?(\w+)-type attacks? (?:will )?have 1\.[23][x\u00d7] power/.exec(desc);
+		const typeResist = /^Halves damage taken from a (?:supereffective )?(\w+)-type attack/.exec(desc);
+		if (item.megaStone) data.megaStone = item.megaStone;
+		if (item.isBerry) data.isBerry = true;
+		if (item.naturalGift) data.naturalGift = item.naturalGift;
+		if (item.isGem) data.isGem = true;
+		if (typeBoost) data.typeBoost = typeBoost[1];
+		if (typeResist) data.typeResist = typeResist[1];
+		data.icon = client.getItemIcon(client.items.get(item.name));
+		items[item.name] = data;
+	}
+	const abilities = dex.abilities.all()
+		.filter(ability => ability.exists && !EXCLUDED.includes(ability.isNonstandard) && ability.id !== 'noability')
+		.map(ability => ability.name);
+	const types = dex.types.all().filter(type => type.exists && !type.isNonstandard);
+	const typeChart = {'???': {}};
+	for (const attacking of [{name: '???'}, ...types]) {
+		const chart = attacking.name === '???' ? typeChart['???'] : (typeChart[attacking.name] = {});
+		for (const defending of [{name: '???'}, ...types]) {
+			const damageTaken = defending.damageTaken?.[attacking.name];
+			chart[defending.name] = attacking.name === '???' || defending.name === '???' ? 1 :
+				[1, 2, 0.5, 0][damageTaken || 0];
+		}
+	}
+	const conditions = {weather: [], terrain: [], field: [], side: []};
+	const conditionIDs = [
+		...Object.keys(dex.data.Conditions),
+		...dex.moves.all().filter(move => moves[move.name] && move.condition).map(move => move.id),
+	];
+	for (const id of new Set(conditionIDs)) {
+		const condition = dex.conditions.get(id);
+		if (Dex.conditions.get(id).exists && Dex.moves.get(id).isNonstandard !== 'Custom') continue;
+		if (condition.effectType === 'Weather') {
+			conditions.weather.push(condition.name);
+		} else if (condition.effectType === 'Terrain') {
+			conditions.terrain.push(condition.name);
+		} else if (condition.onSideStart || condition.onSideResidual) {
+			conditions.side.push(condition.name);
+		} else if (condition.onFieldStart || condition.onFieldResidual) {
+			conditions.field.push(condition.name);
+		}
+	}
+	const legal = {};
+	const names = Object.keys(species);
+	for (const format of formats.filter(entry => entry.mod === mod)) {
+		const validator = TeamValidator.get(format.id);
+		legal[format.id] = [];
+		for (const [i, name] of names.entries()) {
+			const specie = dex.species.get(name);
+			const set = {name, species: name, item: '', ability: '', moves: [], nature: '', gender: '', evs: {}, ivs: {}, level: 100};
+			if (!specie.battleOnly && !validator.checkSpecies(set, specie, specie, {})) legal[format.id].push(i);
+		}
+	}
+	const typeIcons = Object.fromEntries(Object.keys(typeChart).slice(1).map(type => [type, `${client.fxPrefix}types/${type}.png`]));
+	const output = {gen: dex.gen, species, moves, items, abilities, typeChart, typeIcons, conditions, legal};
+	fs.writeFileSync(path.join(outDir, `${mod}.json`), JSON.stringify(output));
+	console.log(`Wrote ${mod}.json`);
+}
+
+function bundle(mod) {
+	const files = {};
+	for (const file of fs.readdirSync(path.join(psDist, 'data'))) {
+		if (file.endsWith('.js') && file !== 'pokemongo.js') files[`/data/${file.slice(0, -3)}`] = path.join(psDist, 'data', file);
+	}
+	const included = [mod];
+	for (const current of included) {
+		const dir = path.join(psDist, 'data/mods', current);
+		const dependencies = fs.existsSync(path.join(dir, 'mods.json')) ?
+			Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'mods.json'), 'utf8'))) : [];
+		for (const file of fs.readdirSync(dir)) {
+			if (!file.endsWith('.js') || file === 'pokemongo.js') continue;
+			files[`/data/mods/${current}/${file.slice(0, -3)}`] = path.join(dir, file);
+			for (const match of fs.readFileSync(path.join(dir, file), 'utf8').matchAll(/require\("\.\.\/([a-z0-9]+)\//g)) {
+				dependencies.push(match[1]);
+			}
+		}
+		for (const dependency of dependencies) {
+			if (!included.includes(dependency)) included.push(dependency);
+		}
+	}
+	files['/config/alt-formats'] = path.join(psDist, 'config/alt-formats.js');
+	const table = Object.entries(files).map(([key, file]) => {
+		const target = key.endsWith('/learnsets') ? `sim-learnsets:${file}` : file;
+		return `\t${JSON.stringify(key)}: () => require(${JSON.stringify(target)}),`;
+	});
+	return esbuild.build({
+		entryPoints: [path.resolve(__dirname, 'sim-worker.js')],
+		outfile: path.join(outDir, `${mod}.js`),
+		bundle: true,
+		minify: true,
+		platform: 'browser',
+		format: 'iife',
+		define: {__dirname: '"/sim"'},
+		logLevel: 'error',
+		plugins: [{
+			name: 'sim',
+			setup(build) {
+				build.onResolve({filter: /^sim-modules$/}, () => ({path: 'modules', namespace: 'sim'}));
+				build.onResolve({filter: /^sim-learnsets:/}, args => ({path: args.path.slice(14), namespace: 'sim-learnsets'}));
+				build.onResolve({filter: /^pokemon-showdown\//}, args => ({path: path.join(psDist, args.path.slice(17)) + '.js'}));
+				build.onResolve({filter: /^(fs|path|node:util|node:crypto)$/}, args => ({path: args.path, namespace: 'sim'}));
+				build.onResolve({filter: /^(\.\.\/)+lib$/}, () => ({path: 'lib', namespace: 'sim'}));
+				build.onResolve({filter: /random-teams$|random-battles\/.*\/teams$/}, () => ({path: 'empty', namespace: 'sim'}));
+				build.onResolve({filter: /^\/sim\//}, args => {
+					const file = path.resolve(psDist, 'sim', args.path.slice(5)) + '.js';
+					return fs.existsSync(file) ? {path: file} : {path: 'missing', namespace: 'sim'};
+				});
+				build.onLoad({filter: /.*/, namespace: 'sim'}, args => ({
+					contents: args.path === 'modules' ? `module.exports = {\n${table.join('\n')}\n};` : STUBS[args.path] || STUBS.empty,
+					resolveDir: psDist,
+				}));
+				build.onLoad({filter: /.*/, namespace: 'sim-learnsets'}, args => ({
+					contents: `exports.Learnsets = ${JSON.stringify(Object.fromEntries(
+						Object.keys(require(args.path).Learnsets).map(id => [id, {}])
+					))};`,
+				}));
+				build.onLoad({filter: /\/data\/mods\/.*\.js$/}, args => ({
+					contents: fs.readFileSync(args.path, 'utf8').replace(/require\("\.\.\/" \+ /g, 'globalThis.require("/data/mods/" + '),
+					resolveDir: path.dirname(args.path),
+				}));
+			},
+		}],
+	});
+}
+
+(async () => {
+	const client = await loadClient();
+	for (const mod of mods) {
+		dump(mod, client);
+		await bundle(mod);
+		console.log(`Wrote ${mod}.js`);
+	}
+	fs.writeFileSync(path.join(outDir, 'formats.json'), JSON.stringify(formatList));
+	console.log(`Wrote formats.json`);
+})();
