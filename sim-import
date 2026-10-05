@@ -66,6 +66,13 @@ async function loadClient() {
 function dump(mod, client) {
 	const dex = Dex.mod(mod);
 	const species = {};
+	const formes = {};
+	for (const specie of dex.species.all()) {
+		if (!specie.exists || EXCLUDED.includes(specie.isNonstandard) || specie.forme.endsWith('Gmax')) continue;
+		const base = dex.species.get(specie.baseSpecies);
+		if (specie.name === base.name || base.cosmeticFormes?.includes(specie.name)) continue;
+		(formes[base.name] || (formes[base.name] = [])).push(specie.name);
+	}
 	for (const specie of dex.species.all()) {
 		if (!specie.exists || EXCLUDED.includes(specie.isNonstandard)) continue;
 		const data = {types: specie.types, bs: {}, weightkg: specie.weightkg};
@@ -75,7 +82,8 @@ function dump(mod, client) {
 		if (specie.abilities[0]) data.abilities = {0: specie.abilities[0]};
 		if (specie.canGigantamax) data.canGigantamax = specie.canGigantamax;
 		if (specie.baseSpecies !== specie.name) data.baseSpecies = specie.baseSpecies;
-		const otherFormes = (specie.otherFormes || []).filter(forme => !EXCLUDED.includes(dex.species.get(forme).isNonstandard));
+		const otherFormes = [...new Set([...specie.otherFormes || [], ...formes[specie.name] || []])]
+			.filter(forme => !EXCLUDED.includes(dex.species.get(forme).isNonstandard));
 		if (otherFormes.length) data.otherFormes = otherFormes;
 		data.icon = client.getPokemonIcon(specie.name);
 		species[specie.name] = data;
