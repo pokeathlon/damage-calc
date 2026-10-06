@@ -32,7 +32,7 @@ header .nav {
     position: relative;
 }
 
-.sim-icon {
+.sim-icon, .poke-info .sim-icon {
     display: inline-block;
     width: 40px;
     height: 30px;
@@ -41,7 +41,7 @@ header .nav {
     position: relative;
     top: -2px;
 }
-.sim-item-icon {
+.sim-item-icon, .poke-info .sim-item-icon {
     display: inline-block;
     width: 24px;
     height: 24px;
@@ -129,11 +129,24 @@ header .nav {
     box-sizing: border-box;
     margin: 0 4px 4px 0;
     cursor: pointer;
-    border: 2px solid transparent;
+    border: var(--sim-speed-width, 2px) solid transparent;
     border-radius: 20%;
 }
 .sim-box-mon:hover {
     outline: 2px solid #1abc9c;
+}
+.sim-cc-swatch {
+    display: inline-block;
+    width: 28px;
+    height: 18px;
+    margin: 2px 6px 2px 0;
+    vertical-align: middle;
+    border: 2px solid transparent;
+    outline: 1px solid #888;
+    border-radius: 20%;
+}
+.sim-box-list .sim-box-mon, #sim-cc-legend .sim-cc-swatch {
+    background-origin: border-box;
 }
 .sim-speed-faster {
     border-color: #7ee1ff;
@@ -167,6 +180,33 @@ header .nav {
 }
 .sim-dmg-24 {
     background: linear-gradient(to right, #daff08 50%, #dd0b0b 0%);
+}
+.sim-dmg-W {
+    background: linear-gradient(to right, #0f0bf3 50%, transparent 0%);
+}
+.sim-dmg-WMO {
+    background: linear-gradient(to right, #1295ec 50%, transparent 0%);
+}
+.sim-cc-speed-off .sim-box-mon {
+    border-color: transparent;
+}
+.sim-cc-dmg-off .sim-box-mon {
+    background: none;
+}
+.sim-cc button {
+    margin: 2px;
+}
+#sim-cc-legend, #sim-cc-settings {
+    text-align: left;
+    margin: 4px 0;
+}
+#sim-cc-settings label {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 8px;
+}
+.sim-cc-swatch[class*="sim-speed"] {
+    background: #888;
 }
 
 .sim-notes-panel {

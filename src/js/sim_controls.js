@@ -25,6 +25,16 @@ var SIM_SIDE_VOLATILES = {
 	isProtected: 'protect', isSeeded: 'leechseed', isNightmared: 'nightmare', isSaltCured: 'saltcure',
 	isForesight: 'foresight', isCharge: 'charge', isHelpingHand: 'helpinghand', isPowerTrick: 'powertrick'
 };
+var SIM_COLOR_CODES = {
+	'Speed Borders': {'sim-speed-faster': "Outspeeds", 'sim-speed-tie': "Speed tie", 'sim-speed-slower': "Slower"},
+	'OHKO Colors': {
+		'sim-dmg-WMO': "Hard counter (gets 4HKO'd at worst and may OHKO)",
+		'sim-dmg-W': "Wall (gets 4HKO'd at worst and does more damage)",
+		'sim-dmg-1': "Always OHKOs", 'sim-dmg-2': "Might OHKO", 'sim-dmg-3': "Might get OHKO'd", 'sim-dmg-4': "Always gets OHKO'd",
+		'sim-dmg-14': "Both sides OHKO each other", 'sim-dmg-23': "Both sides might OHKO each other",
+		'sim-dmg-13': "Always OHKOs but might get OHKO'd", 'sim-dmg-24': "Might OHKO but always gets OHKO'd"
+	}
+};
 var SIM_SIDE_CONDITIONS = {
 	isSR: 'Stealth Rock', steelsurge: 'G-Max Steelsurge', vinelash: 'G-Max Vine Lash', wildfire: 'G-Max Wildfire',
 	cannonade: 'G-Max Cannonade', volcalith: 'G-Max Volcalith', isReflect: 'Reflect', isLightScreen: 'Light Screen',
@@ -36,12 +46,15 @@ var simFormat = null;
 var simLegal = null;
 var simData = {};
 var simResults = null;
+var simSpeeds = null;
 var simWorker = null;
 var simRequest = 0;
 var simBoxRequest = 0;
 var simManualWeather = false;
 var simManualTerrain = false;
 var simItemSide = null;
+var simSelectedMove = null;
+var simColorCodes = false;
 var simGetGeneration = calc.Generations.get;
 var simPerformCalculations = performCalculations;
 var simGetSetOptions = getSetOptions;
@@ -187,14 +200,19 @@ function loadSimWorker(mod) {
 	simWorker = new Worker("./sim-data/" + mod + ".js");
 	simWorker.onmessage = function (event) {
 		var response = event.data;
-		if (response.id === simRequest) {
+		if (response.id === simRequest && response.speeds) {
+			simSpeeds = response.speeds;
+			$("#p1 .sp .totalMod").text(simSpeeds[0]);
+			$("#p2 .sp .totalMod").text(simSpeeds[1]);
+		} else if (response.id === simRequest) {
 			simResults = response.results;
 			showSimField();
 			showSimSpecies($("#p1"), 0);
 			showSimSpecies($("#p2"), 1);
 			simPerformCalculations();
-			if (response.full) requestSimBox();
-		} else if (response.id === simBoxRequest) {
+			if (simSelectedMove && !$(".locked-move").length) $("#" + simSelectedMove).prop("checked", true).change();
+			if (response.full && $("#sim-cc-auto").prop("checked")) requestSimBox();
+		} else if (response.id === simBoxRequest && simColorCodes) {
 			colorSimBox(response.results);
 		}
 	};
@@ -390,7 +408,10 @@ performCalculations = function () {
 		calcs.push(makeSimQuery(p2, p1, p2.moves[i], p2field, p2info, p1info));
 	}
 	simRequest++;
-	simWorker.postMessage({id: simRequest, format: simFormat.id, calcs: calcs});
+	simSpeeds = null;
+	simWorker.postMessage({
+		id: simRequest, format: simFormat.id, calcs: calcs, speed: makeSimQuery(p1, p2, {}, p1field, p1info, p2info)
+	});
 	showSimIcons();
 };
 
@@ -407,6 +428,10 @@ getFirstValidSetOption = function () {
 calculateAllMoves = function (gen, p1, p1field, p2, p2field) {
 	checkStatBoost(p1, p2);
 	var results = [[], []];
+	if (simSpeeds) {
+		p1.stats.spe = simSpeeds[0];
+		p2.stats.spe = simSpeeds[1];
+	}
 	for (var i = 0; i < 4; i++) {
 		results[0][i] = new SimResult(p1, p2, p1.moves[i], simResults[2 * i]);
 		results[1][i] = new SimResult(p2, p1, p2.moves[i], simResults[2 * i + 1]);
@@ -503,7 +528,7 @@ function showSimBox() {
 
 function requestSimBox() {
 	var mons = $("#sim-box .sim-box-mon");
-	if (!mons.length || !simFormat) return;
+	if (!mons.length || !simFormat || !simColorCodes) return;
 	var p2info = $("#p2");
 	var p2 = createPokemon(p2info);
 	var field = createField();
@@ -514,9 +539,7 @@ function requestSimBox() {
 			calcs.push(makeSimQuery(mon, p2, mon.moves[i], field, $(), p2info));
 			calcs.push(makeSimQuery(p2, mon, p2.moves[i], field.clone().swap(), p2info, $()));
 		}
-		$(this).removeClass("sim-speed-faster sim-speed-tie sim-speed-slower").addClass(
-			mon.stats.spe > p2.stats.spe ? "sim-speed-faster" : mon.stats.spe === p2.stats.spe ? "sim-speed-tie" : "sim-speed-slower"
-		).data({hp: mon.curHP(), foeHP: p2.curHP()});
+		$(this).data({hp: mon.curHP(), foeHP: p2.curHP()});
 	});
 	simBoxRequest--;
 	simWorker.postMessage({id: simBoxRequest, format: simFormat.id, calcs: calcs, rangesOnly: true});
@@ -526,10 +549,16 @@ function colorSimBox(results) {
 	$("#sim-box .sim-box-mon").each(function (n) {
 		var offense = '';
 		var defense = '';
+		var dealtMax = 0;
+		var takenMax = 0;
+		var speeds = null;
 		for (var i = 0; i < 4; i++) {
 			var dealt = results[8 * n + 2 * i];
 			var taken = results[8 * n + 2 * i + 1];
+			if (dealt && dealt.species) speeds = [dealt.species[0].speed, dealt.species[1].speed];
+			if (taken && taken.species) speeds = [taken.species[1].speed, taken.species[0].speed];
 			if (dealt && dealt.damage) {
+				dealtMax = Math.max(dealtMax, dealt.damage[dealt.damage.length - 1] / $(this).data("foeHP"));
 				if (dealt.damage[0] >= $(this).data("foeHP")) {
 					offense = '1';
 				} else if (!offense && dealt.damage[dealt.damage.length - 1] >= $(this).data("foeHP")) {
@@ -537,6 +566,7 @@ function colorSimBox(results) {
 				}
 			}
 			if (taken && taken.damage) {
+				takenMax = Math.max(takenMax, taken.damage[taken.damage.length - 1] / $(this).data("hp"));
 				if (taken.damage[0] >= $(this).data("hp")) {
 					defense = '4';
 				} else if (!defense && taken.damage[taken.damage.length - 1] >= $(this).data("hp")) {
@@ -544,8 +574,14 @@ function colorSimBox(results) {
 				}
 			}
 		}
-		$(this).removeClass("sim-dmg-1 sim-dmg-2 sim-dmg-3 sim-dmg-4 sim-dmg-13 sim-dmg-14 sim-dmg-23 sim-dmg-24");
-		if (offense || defense) $(this).addClass("sim-dmg-" + offense + defense);
+		$(this).removeClass("sim-speed-faster sim-speed-tie sim-speed-slower");
+		if (speeds) {
+			$(this).addClass(speeds[0] > speeds[1] ? "sim-speed-faster" : speeds[0] === speeds[1] ? "sim-speed-tie" : "sim-speed-slower");
+		}
+		var code = offense + defense;
+		if (takenMax * 3 < 1 && dealtMax > takenMax) code = dealtMax >= 1 ? 'WMO' : 'W';
+		$(this).removeClass("sim-dmg-1 sim-dmg-2 sim-dmg-3 sim-dmg-4 sim-dmg-13 sim-dmg-14 sim-dmg-23 sim-dmg-24 sim-dmg-W sim-dmg-WMO");
+		if (code) $(this).addClass("sim-dmg-" + code);
 	});
 }
 
@@ -580,7 +616,7 @@ $("#p1, #p2").children("legend").append(simIcon());
 $(".field-info > legend").prepend(simIcon()).append(simIcon());
 $(".poke-info input.set-selector").after(
 	"<fieldset class=\"sim-fusion hide\"><legend>Fuse</legend><div class=\"sim-collapse\"><select class=\"fusion calc-trigger\"></select></div></fieldset>" +
-	"<div class=\"sim-save\"><span class=\"sim-saved\">Saved!</span><button class=\"sim-save-button\">Save Changes</button></div>"
+	"<div class=\"sim-save\"><span class=\"sim-saved\">Saved!</span><button class=\"sim-save-button\" hidden>Save Changes</button></div>"
 );
 $(".poke-info select.ability").parent().after(
 	"<div class=\"sim-ability2 hide\"><label>Ability 2</label><select class=\"ability2 calc-trigger\"></select></div>"
@@ -588,6 +624,13 @@ $(".poke-info select.ability").parent().after(
 $(".poke-info select.item").after("<button class=\"sim-item-button\"></button>");
 $("#p1").after(
 	"<fieldset class=\"sim-box-panel\"><div class=\"sim-box-label\">Box</div><div class=\"sim-box-list\" id=\"sim-box\"></div><hr />" +
+	"<div class=\"sim-cc\"><div class=\"sim-box-label\">Color Codes</div><button id=\"sim-cc-show\">Show</button>" +
+	"<button id=\"sim-cc-hide\" hidden>Hide</button><button id=\"sim-cc-refresh\" hidden>Refresh</button>" +
+	"<button id=\"sim-cc-info\" hidden>Color Code Explanation</button><div id=\"sim-cc-legend\" hidden></div>" +
+	"<div id=\"sim-cc-settings\" hidden><label><input type=\"checkbox\" id=\"sim-cc-speed\" checked />speed border</label>" +
+	"<label><input type=\"checkbox\" id=\"sim-cc-dmg\" checked />OHKO color</label>" +
+	"<label><input type=\"checkbox\" id=\"sim-cc-auto\" checked />auto-refresh</label>" +
+	"<label><input type=\"range\" id=\"sim-cc-width\" min=\"1\" max=\"5\" value=\"2\" />Speed Border width</label></div></div><hr />" +
 	"<div class=\"sim-box-label\">Trash</div><div class=\"sim-box-list\" id=\"sim-trash\"></div>" +
 	"<button id=\"sim-clear-box\">Remove Pok&eacute;mon from the box</button>" +
 	"<button id=\"sim-clear-trash\">Remove Pok&eacute;mon from the trash</button></fieldset>"
@@ -605,6 +648,13 @@ $("#default-level-100").before(
 ).next("label").removeClass("btn-left").addClass("btn-mid");
 $(".genSelection, .notationSelection, .modeSelection").hide();
 $(".main-title-text").text("Format Selector:").after("<select id=\"sim-format\"></select>");
+for (var simCodeGroup in SIM_COLOR_CODES) {
+	$("#sim-cc-legend").append("<div class=\"sim-box-label\">" + simCodeGroup + "</div>");
+	for (var simCode in SIM_COLOR_CODES[simCodeGroup]) {
+		$("#sim-cc-legend").append("<div><span class=\"sim-cc-swatch " + simCode + "\"></span>" + SIM_COLOR_CODES[simCodeGroup][simCode] + "</div>");
+	}
+}
+$("#sim-cc-legend").append("<p>Color coding is intended to help, though some caveats and quirks are missed.</p>");
 makeSimFrame("sim-items", "Items", "");
 makeSimFrame("sim-notes", "Notes", "<textarea id=\"sim-notes-text\" cols=\"30\" rows=\"10\"></textarea>");
 
@@ -625,6 +675,7 @@ $(".sim-fusion > legend").click(function () {
 
 $(".sim-save-button").click(function () {
 	var pokeInfo = $(this).closest(".poke-info");
+	$(this).prop("hidden", true);
 	var setName = pokeInfo.find("input.set-selector").val();
 	var name = setName.substring(0, setName.indexOf(" ("));
 	var set = setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")"));
@@ -640,11 +691,18 @@ $(".sim-save-button").click(function () {
 
 $(".sim-item-button").click(function () {
 	simItemSide = $(this).closest(".poke-info");
-	$("#sim-items").prop("hidden", false);
+	var offset = $(this).offset();
+	var frame = $("#sim-items").prop("hidden", false);
+	frame.css({
+		left: Math.max(0, Math.min(offset.left, $(window).width() - frame.outerWidth())),
+		top: offset.top + $(this).outerHeight()
+	});
 });
 
 $("#sim-items").on("click", ".sim-item", function () {
-	if (simItemSide) simItemSide.find("select.item").val($(this).data("item")).change();
+	if (!simItemSide) return;
+	simItemSide.find("select.item").val($(this).data("item")).change();
+	simItemSide.find(".sim-save-button").prop("hidden", false);
 });
 
 $("#sim-open-notes").click(function () {
@@ -680,6 +738,34 @@ $(".sim-box-panel").on("click", ".sim-box-mon", function () {
 	requestSimBox();
 });
 
+$("#sim-cc-show, #sim-cc-hide").click(function () {
+	simColorCodes = this.id === "sim-cc-show";
+	$("#sim-cc-show, #sim-cc-hide, #sim-cc-refresh, #sim-cc-info, #sim-cc-settings").each(function () {
+		this.hidden = !this.hidden;
+	});
+	$("#sim-cc-legend").prop("hidden", true);
+	$("#sim-box .sim-box-mon").attr("class", "sim-box-mon");
+	requestSimBox();
+});
+
+$("#sim-cc-refresh").click(requestSimBox);
+
+$("#sim-cc-info").click(function () {
+	$("#sim-cc-legend").prop("hidden", !$("#sim-cc-legend").prop("hidden"));
+});
+
+$("#sim-cc-speed, #sim-cc-dmg").change(function () {
+	$(".sim-box-panel").toggleClass(this.id + "-off", !this.checked);
+});
+
+$("#sim-cc-auto").change(function () {
+	if (this.checked) requestSimBox();
+});
+
+$("#sim-cc-width").on("input change", function () {
+	$(".sim-box-panel")[0].style.setProperty("--sim-speed-width", this.value + "px");
+});
+
 $("#sim-clear-box").click(function () {
 	$("#clearSets").click();
 	showSimBox();
@@ -711,6 +797,21 @@ $(document).on("click", "input[name='weather']", function () {
 
 $(document).on("click", "input[name='terrain']", function () {
 	simManualTerrain = true;
+});
+
+$(".result-move").click(function () {
+	simSelectedMove = this.id;
+});
+
+$(".set-selector").change(function () {
+	simSelectedMove = null;
+	$(this).closest(".poke-info").find(".sim-save-button").prop("hidden", true);
+});
+
+$(".poke-info").on("change input", ".forme, .level, .gender, .evs, .ivs, .dvs, .nature, .ability, .item, .teraType, .gmaxToggle, .move-selector", function (event) {
+	if (event.target === this && (event.originalEvent || event.added)) {
+		$(this).closest(".poke-info").find(".sim-save-button").prop("hidden", false);
+	}
 });
 
 $(".set-selector, select.ability").change(function () {

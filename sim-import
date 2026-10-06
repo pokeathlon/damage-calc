@@ -111,8 +111,8 @@ function dump(mod, client) {
 		if (!item.exists || EXCLUDED.includes(item.isNonstandard)) continue;
 		const data = {};
 		const desc = item.shortDesc || text[item.id]?.shortDesc || '';
-		const typeBoost = /^Holder's (?:first successful )?(\w+)-type attacks? (?:will )?have 1\.[23][x\u00d7] power/.exec(desc);
-		const typeResist = /^Halves damage taken from a (?:supereffective )?(\w+)-type attack/.exec(desc);
+		const typeBoost = /^Holder's (?:first successful )?(\w+)-type attacks? (?:will )?have 1\.\d[x\u00d7] power/.exec(desc);
+		const typeResist = /^(?:Halves|1\/4) damage taken from (?:a )?(?:supereffective )?(\w+)-type attack/.exec(desc);
 		if (item.megaStone) data.megaStone = item.megaStone;
 		if (item.isBerry) data.isBerry = true;
 		if (item.naturalGift) data.naturalGift = item.naturalGift;
@@ -125,7 +125,8 @@ function dump(mod, client) {
 	const abilities = dex.abilities.all()
 		.filter(ability => ability.exists && !EXCLUDED.includes(ability.isNonstandard) && ability.id !== 'noability')
 		.map(ability => ability.name);
-	const types = dex.types.all().filter(type => type.exists && !type.isNonstandard);
+	const used = new Set([...Object.values(species).flatMap(specie => specie.types), ...Object.values(moves).map(move => move.type)]);
+	const types = dex.types.all().filter(type => type.exists && (!type.isNonstandard || used.has(type.name)));
 	const typeChart = {'???': {}};
 	for (const attacking of [{name: '???'}, ...types]) {
 		const chart = attacking.name === '???' ? typeChart['???'] : (typeChart[attacking.name] = {});
@@ -164,7 +165,7 @@ function dump(mod, client) {
 			if (!specie.battleOnly && !validator.checkSpecies(set, specie, specie, {})) legal[format.id].push(i);
 		}
 	}
-	const typeIcons = Object.fromEntries(Object.keys(typeChart).slice(1).map(type => [type, `${client.fxPrefix}types/${type}.png`]));
+	const typeIcons = Object.fromEntries(dex.types.all().filter(type => type.exists).map(type => [type.name, `${client.fxPrefix}types/${type.name}.png`]));
 	const output = {gen: dex.gen, species, moves, items, abilities, typeChart, typeIcons, conditions, legal};
 	fs.writeFileSync(path.join(outDir, `${mod}.json`), JSON.stringify(output));
 	console.log(`Wrote ${mod}.json`);

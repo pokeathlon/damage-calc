@@ -34,7 +34,7 @@ function validate(query) {
 	const format = Dex.formats.get(query.format);
 	const dex = Dex.forFormat(format);
 	if (!query.attacker || !query.defender) return `An attacker and a defender are required.`;
-	if (!dex.moves.get(query.move).exists) return `Unknown move '${query.move}'.`;
+	if (query.move && !dex.moves.get(query.move).exists) return `Unknown move '${query.move}'.`;
 	if (format.gameType === 'doubles') {
 		query.attackerAlly = query.attackerAlly || {species: query.attacker.species, ability: 'No Ability'};
 		query.defenderAlly = query.defenderAlly || {species: query.defender.species, ability: 'No Ability'};
@@ -148,6 +148,7 @@ function simulate(query, rolls, crit) {
 		(target.m.fusion ? `/${battle.dex.species.get(target.m.fusion).name}` : ''));
 	const species = [attacker, defender].map(target => ({
 		baseStats: target.species.baseStats, types: target.species.types, stats: {hp: target.maxhp, ...target.storedStats},
+		speed: target.getStat('spe'),
 	}));
 	const fieldState = {
 		weather: battle.field.weather && (WEATHERS[battle.field.weather] || battle.field.getWeather().name),
@@ -381,6 +382,15 @@ function run(calc, format, full) {
 	}
 }
 
+function getSpeeds(calc, format) {
+	try {
+		const query = {...calc, format};
+		return validate(query) ? null : simulate(query, [], false).species.map(target => target.speed);
+	} catch {
+		return null;
+	}
+}
+
 const queue = {main: null, box: null};
 let running = null;
 
@@ -390,6 +400,8 @@ async function work() {
 		const kind = request === queue.main ? 'main' : 'box';
 		queue[kind] = null;
 		const job = running = {kind, stale: false};
+		const speeds = request.speed && getSpeeds(request.speed, request.format);
+		if (speeds) postMessage({id: request.id, speeds});
 		for (const full of request.rangesOnly ? [false] : [false, true]) {
 			const results = [];
 			for (const calc of request.calcs) {
