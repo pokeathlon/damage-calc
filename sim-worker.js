@@ -16,6 +16,9 @@ globalThis.require.resolve = function (id) {
 
 const {Battle} = require('pokemon-showdown/sim/battle');
 const {Dex, toID} = require('pokemon-showdown/sim/dex');
+const {Format} = require('pokemon-showdown/sim/dex-formats');
+const {id: mod, ruleset} = require('sim-format');
+const BattleStatGuesser = require('sim-guesser');
 
 const ROLLS = [85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100];
 const SLOTS = ['attacker', 'attackerAlly', 'defender', 'defenderAlly'];
@@ -25,13 +28,34 @@ const WEATHERS = {
 };
 const STATUSES = {brn: 'burn', psn: 'poison', tox: 'poison'};
 const SCREENS = {reflect: 'Physical', lightscreen: 'Special', auroraveil: null};
+const FORMATS = {
+	singles: new Format({name: `${mod} singles`, mod, gameType: 'singles', ruleset, effectType: 'Format'}),
+	doubles: new Format({name: `${mod} doubles`, mod, gameType: 'doubles', ruleset, effectType: 'Format'}),
+};
+const ROLES = {
+	'Fast Physical Sweeper': ['Physical'],
+	'Bulky Physical Sweeper': ['Physical'],
+	'Fast Special Sweeper': ['Special'],
+	'Bulky Special Sweeper': ['Special'],
+	'Fast Band': ['Physical', 'Choice Band'],
+	'Bulky Band': ['Physical', 'Choice Band'],
+	'Fast Specs': ['Special', 'Choice Specs'],
+	'Bulky Specs': ['Special', 'Choice Specs'],
+	'Physical Scarf': ['Physical', 'Choice Scarf'],
+	'Special Scarf': ['Special', 'Choice Scarf'],
+	'Physical Biased Mixed Scarf': ['Physical', 'Choice Scarf', 'Special'],
+	'Special Biased Mixed Scarf': ['Special', 'Choice Scarf', 'Physical'],
+	'Fast Bulky Support': [''],
+	'Physically Defensive': [''],
+	'Specially Defensive': [''],
+};
 
 function listText(list) {
 	return list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0];
 }
 
 function validate(query) {
-	const format = Dex.formats.get(query.format);
+	const format = FORMATS[query.format];
 	const dex = Dex.forFormat(format);
 	if (!query.attacker || !query.defender) return `An attacker and a defender are required.`;
 	if (query.move && !dex.moves.get(query.move).exists) return `Unknown move '${query.move}'.`;
@@ -72,7 +96,7 @@ function validate(query) {
 }
 
 function simulate(query, rolls, crit) {
-	const battle = new Battle({formatid: query.format, seed: 'gen5,0000000000000000'});
+	const battle = new Battle({format: FORMATS[query.format], seed: 'gen5,0000000000000000'});
 	const tr = battle.trunc;
 	const field = query.field || {};
 	battle.random = (m, n) => (n ?? m ?? 1) - 1;
@@ -141,6 +165,7 @@ function simulate(query, rolls, crit) {
 		if (set.status) target.setStatus(set.status, foe, null, true);
 		for (const id of set.volatiles || []) target.addVolatile(id, foe);
 		if (set.timesAttacked) target.timesAttacked = set.timesAttacked;
+		if (set.activeTurns !== undefined) target.activeTurns = set.activeTurns;
 		if (set.boosts) Object.assign(target.boosts, set.boosts);
 	}
 
@@ -391,6 +416,77 @@ function getSpeeds(calc, format) {
 	}
 }
 
+function getPresets(request, format) {
+	const query = {format, attacker: {...request.set}, defender: {species: request.set.species}};
+	if (validate(query)) return null;
+	const {baseStats, types} = simulate(query, [], false).species[0];
+	const dex = Dex.forFormat(FORMATS[format]);
+	const typeNames = dex.types.all().filter(type => type.exists && !type.isNonstandard).map(type => type.name);
+	const coverage = list => typeNames.reduce((total, type) => total + Math.max(...list.map(move => (
+		dex.getImmunity(move.type, type) ? 2 ** dex.getEffectiveness(move.type, type) : 0
+	))), 0);
+	const pool = [];
+	for (const [usable, names] of [[true, request.usable], [false, request.other]]) {
+		for (const name of names) {
+			const move = dex.moves.get(name);
+			if (pool.some(entry => entry.move === move)) continue;
+			pool.push({
+				move, usable,
+				score: move.basePower * (move.accuracy === true ? 1 : move.accuracy / 100) *
+					(Array.isArray(move.multihit) ? (move.multihit[0] + move.multihit[1]) / 2 : move.multihit || 1) *
+					(move.recoil || move.mindBlownRecoil || move.hasCrashDamage ? 0.85 : 1) * (move.priority < 0 ? 0.5 : 1) *
+					(move.onTry || move.onTryMove || move.onTryImmunity || move.beforeMoveCallback || move.onDisableMove ? 0.5 : 1),
+			});
+		}
+	}
+	pool.sort((a, b) => b.score - a.score);
+	const movesets = {};
+	const pick = (primary, secondary) => {
+		const key = primary + (secondary || '');
+		if (movesets[key]) return movesets[key];
+		const chosen = [];
+		for (const type of types) {
+			const stab = pool.find(entry => entry.usable && entry.move.category === primary && entry.move.type === type);
+			if (stab) chosen.push(stab.move);
+		}
+		for (const [category, count] of [[primary, secondary ? 3 : 4], [secondary, 4]]) {
+			while (chosen.length < count) {
+				let best = null;
+				for (const entry of pool) {
+					if (!entry.usable || entry.move.category !== category || chosen.some(move => move.type === entry.move.type)) continue;
+					const value = coverage([...chosen, entry.move]);
+					if (!best || value > best.value) best = {move: entry.move, value};
+				}
+				if (!best) break;
+				chosen.push(best.move);
+			}
+		}
+		for (const entry of [...pool.filter(entry => entry.usable && entry.move.category === primary), ...pool.filter(entry => entry.usable), ...pool]) {
+			if (chosen.length < 4 && !chosen.includes(entry.move)) chosen.push(entry.move);
+		}
+		return (movesets[key] = chosen.map(move => move.name));
+	};
+	const guesser = new BattleStatGuesser('');
+	guesser.dex = dex;
+	guesser.getStats = () => baseStats;
+	const stronger = baseStats.atk >= baseStats.spa ? 'Physical' : 'Special';
+	const presets = {role: guesser.guessRole({...request.set, item: '', moves: pick(stronger)}), sets: {}};
+	for (const [role, [category, item, secondary]] of Object.entries(ROLES)) {
+		const set = {...request.set, item: item || '', moves: pick(category || stronger, secondary)};
+		if (guesser.guessRole(set) === '?') continue;
+		const guess = guesser.guessEVs(set, role);
+		const nature = dex.natures.all().find(entry => entry.plus === guess.plusStat && entry.minus === guess.minusStat);
+		const evs = {};
+		for (const stat of dex.stats.ids()) {
+			if (guess[stat]) evs[stat] = guess[stat];
+		}
+		const label = Object.keys(evs).map(stat => `${evs[stat]} ${dex.stats.shortNames[stat]}`).join(' / ') +
+			(nature ? ` (+${dex.stats.shortNames[nature.plus]}, -${dex.stats.shortNames[nature.minus]})` : '');
+		presets.sets[role] = {evs, nature: nature ? nature.name : 'Hardy', item: set.item, moves: set.moves, label};
+	}
+	return presets;
+}
+
 const queue = {main: null, box: null};
 let running = null;
 
@@ -417,6 +513,16 @@ async function work() {
 }
 
 globalThis.onmessage = function (event) {
+	if (event.data.presets) {
+		let presets = null;
+		try {
+			presets = getPresets(event.data.presets, event.data.format);
+		} catch (error) {
+			console.error(error);
+		}
+		postMessage({id: event.data.id, side: event.data.side, presets});
+		return;
+	}
 	const kind = event.data.rangesOnly ? 'box' : 'main';
 	queue[kind] = event.data;
 	if (running && (running.kind === kind || kind === 'main')) running.stale = true;

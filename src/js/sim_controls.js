@@ -1,4 +1,4 @@
-/*global performCalculations: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex */
+/*global performCalculations: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs */
 var SIM_PARAMS = new URLSearchParams(window.location.search);
 var SIM_CLIENT = SIM_PARAMS.get('client') || window.location.hostname.replace(/^calc\./, 'play.');
 var SIM_DOMAIN = SIM_CLIENT.replace(/^play\./, '');
@@ -8,7 +8,7 @@ var SIM_NAV = [
 	'https://pokeathlon.wiki.gg/', 'https://discord.gg/AY9UmkTKuh', '//' + SIM_CLIENT + '/'
 ];
 var SIM_FIELD_ICONS = ['Pyukumuku', 'Dunsparce'];
-var SIM_DEFAULT_FORMAT = 'gen9chaosmayhemag';
+var SIM_DEFAULT_MOD = 'gen9chaosmayhem';
 var SIM_COMMON_ITEMS = [
 	'Choice Band', 'Choice Specs', 'Choice Scarf', 'Life Orb', 'Assault Vest', 'Leftovers', 'Focus Sash', 'Muscle Band',
 	'Wise Glasses', 'Protective Pads', 'Expert Belt', 'Rocky Helmet', 'Heavy-Duty Boots', 'White Herb', 'Electric Seed',
@@ -19,7 +19,10 @@ var SIM_FLAGS = {
 	makesContact: 'contact', isPunch: 'punch', isBite: 'bite', isBullet: 'bullet',
 	isSound: 'sound', isPulse: 'pulse', isSlicing: 'slicing', isWind: 'wind'
 };
-var SIM_ABILITIES_ON = ['Intimidate', 'Slow Start', 'Teraform Zero', 'Intrepid Sword', 'Dauntless Shield'];
+var SIM_ABILITY_TOGGLES = {
+	'Intimidate': true, 'Slow Start': true, 'Teraform Zero': true, 'Intrepid Sword': true, 'Dauntless Shield': true, 'Analytic': false,
+	'Flash Fire': false, 'Unburden': false, 'Electromorphosis': false, 'Stakeout': false, 'Plus': false, 'Minus': false
+};
 var SIM_ABILITY_VOLATILES = {'Flash Fire': 'flashfire', 'Unburden': 'unburden', 'Electromorphosis': 'charge'};
 var SIM_SIDE_VOLATILES = {
 	isProtected: 'protect', isSeeded: 'leechseed', isNightmared: 'nightmare', isSaltCured: 'saltcure',
@@ -41,8 +44,8 @@ var SIM_SIDE_CONDITIONS = {
 	isAuroraVeil: 'Aurora Veil', isTailwind: 'Tailwind'
 };
 
-var simFormats = {};
-var simFormat = null;
+var simMods = {};
+var simMod = null;
 var simLegal = null;
 var simData = {};
 var simResults = null;
@@ -50,6 +53,7 @@ var simSpeeds = null;
 var simWorker = null;
 var simRequest = 0;
 var simBoxRequest = 0;
+var simPresetRequest = 0;
 var simManualWeather = false;
 var simManualTerrain = false;
 var simItemSide = null;
@@ -57,8 +61,6 @@ var simSelectedMove = null;
 var simColorCodes = false;
 var simGetGeneration = calc.Generations.get;
 var simPerformCalculations = performCalculations;
-var simGetSetOptions = getSetOptions;
-var simGetFirstValidSetOption = getFirstValidSetOption;
 
 function SimTable(entries) {
 	this.entries = entries;
@@ -136,7 +138,11 @@ function makeSimButtons(names, type, name, side) {
 	return buf;
 }
 
-function installSimData(format, data) {
+function simGameType() {
+	return $("#doubles-format").prop("checked") ? 'doubles' : 'singles';
+}
+
+function installSimData(mod, data) {
 	var generation = makeSimGeneration(data);
 	calc.SPECIES[data.gen] = data.species;
 	calc.SPECIES[9] = data.species;
@@ -147,21 +153,20 @@ function installSimData(format, data) {
 	calc.Generations.get = function (num) {
 		return num === data.gen ? generation : simGetGeneration.call(calc.Generations, num);
 	};
-	if (!simFormat || simFormat.mod !== format.mod) loadSimWorker(format.mod);
-	simFormat = format;
+	if (!simMod || simMod.id !== mod.id) loadSimWorker(mod.id);
+	simMod = mod;
 	var names = Object.keys(data.species);
-	simLegal = data.legal[format.id] ? {} : null;
-	$.each(data.legal[format.id] || [], function (i, index) {
+	simLegal = {};
+	$.each(data.legal, function (i, index) {
 		simLegal[names[index]] = true;
 	});
 	$("#gen" + data.gen).prop("checked", true).change();
-	$(format.gameType === 'doubles' ? "#doubles-format" : "#singles-format").prop("checked", true).change();
 	var speciesOptions = "<option value=\"\">(none)</option>" + getSelectOptions(names.filter(function (name) {
 		return !simLegal || simLegal[name];
 	}), true);
-	$(".sim-fusion").toggle(format.fusion).find("select").html(speciesOptions).select2("val", "");
+	$(".poke-info").toggleClass("sim-fusable", mod.fusion).find("select.fusion").html(speciesOptions).select2("val", "");
 	var abilityOptions = "<option value=\"\">(none)</option>" + getSelectOptions(data.abilities.slice(), true);
-	$(".sim-ability2").toggle(format.ability2).find("select").html(abilityOptions).select2("val", "");
+	$(".sim-ability2").toggle(mod.ability2).find("select").html(abilityOptions).val("").change();
 	simManualWeather = false;
 	simManualTerrain = false;
 	$(".sim-weather").html(makeSimButtons(data.conditions.weather, 'radio', 'weather'));
@@ -184,14 +189,14 @@ function installSimData(format, data) {
 	performCalculations();
 }
 
-function loadSimFormat(id) {
-	var format = simFormats[id];
-	SIM_PARAMS.set('format', id);
+function loadSimMod(id) {
+	SIM_PARAMS.set('mod', id);
+	SIM_PARAMS.delete('format');
 	window.history.replaceState({}, document.title, window.location.pathname + '?' + SIM_PARAMS);
-	if (simData[format.mod]) return installSimData(format, simData[format.mod]);
-	$.getJSON("./sim-data/" + format.mod + ".json", function (data) {
-		simData[format.mod] = data;
-		if ($("#sim-format").val() === id) installSimData(format, data);
+	if (simData[id]) return installSimData(simMods[id], simData[id]);
+	$.getJSON("./sim-data/" + id + ".json", function (data) {
+		simData[id] = data;
+		if ($("#sim-mod").val() === id) installSimData(simMods[id], data);
 	});
 }
 
@@ -200,7 +205,14 @@ function loadSimWorker(mod) {
 	simWorker = new Worker("./sim-data/" + mod + ".js");
 	simWorker.onmessage = function (event) {
 		var response = event.data;
-		if (response.id === simRequest && response.speeds) {
+		if (response.side) {
+			var pokeInfo = $("#" + response.side);
+			if (pokeInfo.data("simPresetRequest") !== response.id) return;
+			var role = pokeInfo.data("simPresetRole") === true ? response.presets && response.presets.role : pokeInfo.data("simPresetRole");
+			pokeInfo.data("simPresets", response.presets);
+			showSimSpreads(pokeInfo);
+			if (role) applySimPreset(pokeInfo, response.presets && response.presets.sets[role] ? role : "Blank Set");
+		} else if (response.id === simRequest && response.speeds) {
 			simSpeeds = response.speeds;
 			$("#p1 .sp .totalMod").text(simSpeeds[0]);
 			$("#p2 .sp .totalMod").text(simSpeeds[1]);
@@ -230,7 +242,7 @@ function showSimField() {
 }
 
 function simFusion(pokeInfo) {
-	return simFormat.fusion && pokeInfo.find(".sim-fusion").hasClass("sim-open") ? pokeInfo.find("select.fusion").val() : '';
+	return simMod.fusion && pokeInfo.find(".sim-fusion").hasClass("sim-open") ? pokeInfo.find("select.fusion").val() : '';
 }
 
 function restoreSimSpecies(pokeInfo) {
@@ -258,6 +270,14 @@ function showSimSpecies(pokeInfo, side) {
 		calcStats(pokeInfo);
 		return;
 	}
+}
+
+function simAbilities(pokemon, pokeInfo) {
+	var abilities = {ability: [pokemon.ability, pokemon.abilityOn]};
+	if (simMod.ability2 && pokeInfo.find("select.ability2").val()) {
+		abilities.ability2 = [pokeInfo.find("select.ability2").val(), pokeInfo.find(".ability2Toggle").is(":checked")];
+	}
+	return abilities;
 }
 
 function makeSimSet(pokemon, pokeInfo, side) {
@@ -288,10 +308,16 @@ function makeSimSet(pokemon, pokeInfo, side) {
 	}
 	if (pokemon.alliesFainted) set.alliesFainted = pokemon.alliesFainted;
 	if (simFusion(pokeInfo)) set.fusion = simFusion(pokeInfo);
-	if (simFormat.ability2 && pokeInfo.find("select.ability2").val()) set.ability2 = pokeInfo.find("select.ability2").val();
-	if (SIM_ABILITIES_ON.indexOf(pokemon.ability) >= 0 && !pokemon.abilityOn) set.ability = 'No Ability';
-	if (SIM_ABILITY_VOLATILES[pokemon.ability] && pokemon.abilityOn) {
-		set.volatiles.push(SIM_ABILITY_VOLATILES[pokemon.ability]);
+	var abilities = simAbilities(pokemon, pokeInfo);
+	if (abilities.ability2) set.ability2 = abilities.ability2[0];
+	for (var slot in abilities) {
+		var ability = abilities[slot][0];
+		if (SIM_ABILITY_TOGGLES[ability] === undefined) continue;
+		if (SIM_ABILITY_VOLATILES[ability]) {
+			if (abilities[slot][1]) set.volatiles.push(SIM_ABILITY_VOLATILES[ability]);
+		} else if (!abilities[slot][1]) {
+			set[slot] = 'No Ability';
+		}
 	}
 	if (pokemon.boostedStat && pokemon.boostedStat !== 'auto' &&
 		(pokemon.ability === 'Protosynthesis' || pokemon.ability === 'Quark Drive')) {
@@ -344,9 +370,17 @@ function makeSimQuery(attacker, defender, move, field, attackerInfo, defenderInf
 		}
 		for (var i = 0; i < sides[side].spikes; i++) query.field[side].push('Spikes');
 	}
-	if (simFormat.gameType === 'doubles') {
+	if (simGameType() === 'doubles') {
 		query.attackerAlly = makeSimAlly(attacker, field.attackerSide, false);
 		query.defenderAlly = makeSimAlly(defender, field.defenderSide, true);
+	}
+	var abilities = simAbilities(attacker, attackerInfo);
+	for (var slot in abilities) {
+		if (!abilities[slot][1]) continue;
+		if (abilities[slot][0] === 'Stakeout') query.defender.activeTurns = 0;
+		if ((abilities[slot][0] === 'Plus' || abilities[slot][0] === 'Minus') && simGameType() === 'doubles') {
+			query.attackerAlly = query.attackerAlly || {species: attacker.name, ability: 'Plus'};
+		}
 	}
 	return query;
 }
@@ -394,7 +428,7 @@ SimResult.prototype.desc = function () {
 };
 
 performCalculations = function () {
-	if (!simFormat) return;
+	if (!simMod) return;
 	var p1info = $("#p1");
 	var p2info = $("#p2");
 	var p1 = createPokemon(p1info);
@@ -410,19 +444,40 @@ performCalculations = function () {
 	simRequest++;
 	simSpeeds = null;
 	simWorker.postMessage({
-		id: simRequest, format: simFormat.id, calcs: calcs, speed: makeSimQuery(p1, p2, {}, p1field, p1info, p2info)
+		id: simRequest, format: simGameType(), calcs: calcs, speed: makeSimQuery(p1, p2, {}, p1field, p1info, p2info)
 	});
 	showSimIcons();
 };
 
-getSetOptions = function (sets) {
-	return simGetSetOptions(sets).filter(function (option) {
-		return (!simLegal || simLegal[option.pokemon]) && (!option.set || option.isCustom || option.set === 'Blank Set');
+getSetOptions = function () {
+	return Object.keys(pokedex).sort().filter(function (name) {
+		return !simLegal || simLegal[name];
+	}).map(function (name) {
+		return {pokemon: name, text: name, id: name + " (Blank Set)"};
 	});
 };
 
 getFirstValidSetOption = function () {
-	return simGetFirstValidSetOption() || getSetOptions()[1];
+	return getSetOptions()[0];
+};
+
+loadDefaultLists = function () {
+	$(".set-selector").select2({
+		query: function (query) {
+			var pageSize = 30;
+			var results = getSetOptions().filter(function (option) {
+				return option.text.toUpperCase().indexOf(query.term.toUpperCase()) >= 0;
+			});
+			query.callback({
+				results: results.slice((query.page - 1) * pageSize, query.page * pageSize),
+				more: results.length >= query.page * pageSize
+			});
+		},
+		initSelection: function (element, callback) {
+			var id = element.val();
+			callback({id: id, text: id.substring(0, id.indexOf(" ("))});
+		}
+	});
 };
 
 calculateAllMoves = function (gen, p1, p1field, p2, p2field) {
@@ -440,17 +495,17 @@ calculateAllMoves = function (gen, p1, p1field, p2, p2field) {
 };
 
 function simIcon(species) {
-	var data = simFormat && species && simData[simFormat.mod].species[species];
+	var data = simMod && species && simData[simMod.id].species[species];
 	return '<span class="sim-icon" style="' + (data ? data.icon : '') + '"></span>';
 }
 
 function simItemIcon(item) {
-	var data = simFormat && simData[simFormat.mod].items[item || 'Pok\u00e9 Ball'];
+	var data = simMod && simData[simMod.id].items[item || 'Pok\u00e9 Ball'];
 	return '<span class="sim-item-icon" style="' + (data ? data.icon : '') + '"></span>';
 }
 
 function simTypeIcon(type) {
-	var src = simFormat && type && simData[simFormat.mod].typeIcons[type];
+	var src = simMod && type && simData[simMod.id].typeIcons[type];
 	return src ? '<img class="sim-item-type" src="' + src + '" alt="' + type + '" />' : '';
 }
 
@@ -467,8 +522,8 @@ function showSimIcons() {
 }
 
 function showSimItems() {
-	if (!simFormat) return;
-	var items = simData[simFormat.mod].items;
+	if (!simMod) return;
+	var items = simData[simMod.id].items;
 	var sections = {'Common': [], 'Type-Specific': [], 'Gems': [], 'Damage Reduction Berries': []};
 	for (var i = 0; i < SIM_COMMON_ITEMS.length; i++) {
 		if (items[SIM_COMMON_ITEMS[i]]) sections['Common'].push([SIM_COMMON_ITEMS[i], '']);
@@ -528,7 +583,7 @@ function showSimBox() {
 
 function requestSimBox() {
 	var mons = $("#sim-box .sim-box-mon");
-	if (!mons.length || !simFormat || !simColorCodes) return;
+	if (!mons.length || !simMod || !simColorCodes) return;
 	var p2info = $("#p2");
 	var p2 = createPokemon(p2info);
 	var field = createField();
@@ -542,7 +597,7 @@ function requestSimBox() {
 		$(this).data({hp: mon.curHP(), foeHP: p2.curHP()});
 	});
 	simBoxRequest--;
-	simWorker.postMessage({id: simBoxRequest, format: simFormat.id, calcs: calcs, rangesOnly: true});
+	simWorker.postMessage({id: simBoxRequest, format: simGameType(), calcs: calcs, rangesOnly: true});
 }
 
 function colorSimBox(results) {
@@ -585,6 +640,72 @@ function colorSimBox(results) {
 	});
 }
 
+function requestSimPresets(pokeInfo, role) {
+	if (!simMod || !simWorker) return;
+	var data = simData[simMod.id];
+	var moveNames = Object.keys(data.moves);
+	var setName = pokeInfo.find("input.set-selector").val();
+	var set = {
+		species: setName.substring(0, setName.indexOf(" (")),
+		ability: pokeInfo.find("select.ability").val(),
+		level: ~~pokeInfo.find(".level").val()
+	};
+	if (simFusion(pokeInfo)) set.fusion = simFusion(pokeInfo);
+	var pools = [data.pools[set.species], data.pools[set.fusion]].filter(Boolean);
+	var names = function (i) {
+		return [].concat.apply([], pools.map(function (pool) {
+			return pool[i];
+		})).map(function (move) {
+			return moveNames[move];
+		});
+	};
+	simPresetRequest--;
+	pokeInfo.data({simPresetRequest: simPresetRequest, simPresetRole: role});
+	simWorker.postMessage({
+		id: simPresetRequest, side: pokeInfo.attr("id"), format: simGameType(),
+		presets: {set: set, usable: names(0), other: names(1)}
+	});
+}
+
+function requestSimFusionPresets(pokeInfo) {
+	var role = pokeInfo.find("select.spread").val();
+	var presets = pokeInfo.data("simPresets");
+	requestSimPresets(pokeInfo, pokeInfo.data("simPresetAuto") || (presets && presets.sets[role] ? role : ''));
+}
+
+function showSimSpreads(pokeInfo) {
+	var setName = pokeInfo.find("input.set-selector").val();
+	var set = setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")"));
+	var current = pokeInfo.find("select.spread").val() || set;
+	var sets = (pokeInfo.data("simPresets") || {sets: {}}).sets;
+	var options = set === "Blank Set" ? '' : '<option value="' + set + '">' + set + '</option>';
+	for (var role in sets) {
+		options += '<option value="' + role + '">' + role + ': ' + sets[role].label + '</option>';
+	}
+	options += '<option value="Blank Set">Blank Set</option>';
+	pokeInfo.find("select.spread").html(options).val(current);
+	if (!pokeInfo.find("select.spread").val()) pokeInfo.find("select.spread").val(set);
+}
+
+function applySimPreset(pokeInfo, role) {
+	var presets = pokeInfo.data("simPresets");
+	var set = presets && presets.sets[role] || {evs: {}, nature: "Hardy", item: "", moves: []};
+	pokeInfo.data("simPresetAuto", presets && role === presets.role);
+	pokeInfo.find("select.spread").val(role);
+	for (var stat in SIM_STATS) {
+		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(set.evs[stat] || 0);
+	}
+	pokeInfo.find(".nature").val(set.nature);
+	pokeInfo.find("select.item").val(set.item).change();
+	for (var i = 0; i < 4; i++) {
+		pokeInfo.find(".move" + (i + 1) + " select.move-selector").val(set.moves[i] || "(No Move)").change();
+	}
+	calcHP(pokeInfo);
+	calcStats(pokeInfo);
+	totalEVs(pokeInfo);
+	PC_HANDLER();
+}
+
 function makeSimFrame(id, title, body) {
 	var frame = $(
 		'<div class="sim-frame" id="' + id + '" hidden><div class="sim-frame-header"><span>' + title + '</span>' +
@@ -615,11 +736,14 @@ $("header").addClass("sim-header");
 $("#p1, #p2").children("legend").append(simIcon());
 $(".field-info > legend").prepend(simIcon()).append(simIcon());
 $(".poke-info input.set-selector").after(
-	"<fieldset class=\"sim-fusion hide\"><legend>Fuse</legend><div class=\"sim-collapse\"><select class=\"fusion calc-trigger\"></select></div></fieldset>" +
-	"<div class=\"sim-save\"><span class=\"sim-saved\">Saved!</span><button class=\"sim-save-button\" hidden>Save Changes</button></div>"
+	"<div class=\"sim-fusion\"><button class=\"sim-fusion-button\" title=\"Fusion\"><img src=\"//" + SIM_CLIENT + "/fx/fused.png\" alt=\"Fusion\" /></button>" +
+	"<select class=\"fusion calc-trigger\"></select></div>" +
+	"<div class=\"sim-spread\"><label>Spread</label><select class=\"spread\"></select>" +
+	"<div class=\"sim-saved\">Saved!</div><button class=\"sim-save-button\" hidden>Save Changes</button></div>"
 );
 $(".poke-info select.ability").parent().after(
-	"<div class=\"sim-ability2 hide\"><label>Ability 2</label><select class=\"ability2 calc-trigger\"></select></div>"
+	"<div class=\"sim-ability2 hide\"><label>Ability 2</label> <select class=\"ability2 calc-trigger\"></select> " +
+	"<input hidden type=\"checkbox\" title=\"Is this ability active?\" class=\"ability2Toggle calc-trigger\" /></div>"
 );
 $(".poke-info select.item").after("<button class=\"sim-item-button\"></button>");
 $("#p1").after(
@@ -647,7 +771,7 @@ $("#default-level-100").before(
 	"<label class=\"btn btn-wide btn-left\" for=\"default-level-120\">Level 120</label>"
 ).next("label").removeClass("btn-left").addClass("btn-mid");
 $(".genSelection, .notationSelection, .modeSelection").hide();
-$(".main-title-text").text("Format Selector:").after("<select id=\"sim-format\"></select>");
+$(".main-title-text").text("Mod Selector:").after("<select id=\"sim-mod\"></select>");
 for (var simCodeGroup in SIM_COLOR_CODES) {
 	$("#sim-cc-legend").append("<div class=\"sim-box-label\">" + simCodeGroup + "</div>");
 	for (var simCode in SIM_COLOR_CODES[simCodeGroup]) {
@@ -666,10 +790,16 @@ $("select.fusion").change(function () {
 	if (!$(this).val()) restoreSimSpecies($(this).closest(".poke-info"));
 });
 
-$(".sim-fusion > legend").click(function () {
+$("select.ability2").change(function () {
+	var toggle = SIM_ABILITY_TOGGLES[$(this).val()];
+	$(this).siblings(".ability2Toggle").prop({hidden: toggle === undefined, checked: !!toggle});
+});
+
+$(".sim-fusion-button").click(function () {
 	var fusion = $(this).parent().toggleClass("sim-open");
 	if (!fusion.find("select.fusion").val()) return;
 	if (!fusion.hasClass("sim-open")) restoreSimSpecies(fusion.closest(".poke-info"));
+	requestSimFusionPresets(fusion.closest(".poke-info"));
 	PC_HANDLER();
 });
 
@@ -683,9 +813,9 @@ $(".sim-save-button").click(function () {
 	$(".import-name-text").val(setdex[name] && setdex[name][set] && setdex[name][set].isCustomSet ? set : "Custom Set");
 	$("#import.bs-btn").click();
 	showSimBox();
-	pokeInfo.find(".sim-saved").css("visibility", "visible");
+	pokeInfo.find(".sim-saved").show();
 	setTimeout(function () {
-		pokeInfo.find(".sim-saved").css("visibility", "hidden");
+		pokeInfo.find(".sim-saved").hide();
 	}, 1500);
 });
 
@@ -804,8 +934,22 @@ $(".result-move").click(function () {
 });
 
 $(".set-selector").change(function () {
+	var pokeInfo = $(this).closest(".poke-info");
 	simSelectedMove = null;
-	$(this).closest(".poke-info").find(".sim-save-button").prop("hidden", true);
+	pokeInfo.find(".sim-save-button").prop("hidden", true);
+	pokeInfo.data("simPresets", null).find("select.spread").val("");
+	showSimSpreads(pokeInfo);
+	requestSimPresets(pokeInfo, / \(Blank Set\)$/.test($(this).val()));
+});
+
+$("select.spread").change(function () {
+	var pokeInfo = $(this).closest(".poke-info");
+	var setName = pokeInfo.find("input.set-selector").val();
+	if ($(this).val() !== "Blank Set" && setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")")) === $(this).val()) {
+		pokeInfo.find("input.set-selector").change();
+	} else {
+		applySimPreset(pokeInfo, $(this).val());
+	}
 });
 
 $(".poke-info").on("change input", ".forme, .level, .gender, .evs, .ivs, .dvs, .nature, .ability, .item, .teraType, .gmaxToggle, .move-selector", function (event) {
@@ -821,10 +965,11 @@ $(".set-selector, select.ability").change(function () {
 
 $("select.fusion").change(function () {
 	if ($(this).val()) $(this).closest(".sim-fusion").addClass("sim-open");
+	requestSimFusionPresets($(this).closest(".poke-info"));
 });
 
-$("#sim-format").change(function () {
-	loadSimFormat($(this).val());
+$("#sim-mod").change(function () {
+	loadSimMod($(this).val());
 });
 
 $(document).ready(function () {
@@ -840,22 +985,21 @@ $(document).ready(function () {
 	updateTheme();
 	$("#sim-notes-text").val(localStorage.getItem("notes") || "");
 	$("select.fusion").select2({dropdownAutoWidth: true, width: '100%'});
-	$("select.ability2").select2({dropdownAutoWidth: true});
-	$.getJSON("./sim-data/formats.json", function (formats) {
+	$.getJSON("./sim-data/mods.json", function (mods) {
 		var sections = {};
-		for (var i = 0; i < formats.length; i++) {
-			simFormats[formats[i].id] = formats[i];
-			(sections[formats[i].section] = sections[formats[i].section] || []).push(formats[i]);
+		for (var i = 0; i < mods.length; i++) {
+			simMods[mods[i].id] = mods[i];
+			(sections[mods[i].section] = sections[mods[i].section] || []).push(mods[i]);
 		}
 		var options = '';
 		for (var section in sections) {
 			options += '<optgroup label="' + section + '">';
 			for (var j = 0; j < sections[section].length; j++) {
-				options += '<option value="' + sections[section][j].id + '">' + sections[section][j].name + '</option>';
+				options += '<option value="' + sections[section][j].id + '">' + sections[section][j].id + '</option>';
 			}
 			options += '</optgroup>';
 		}
-		var id = SIM_PARAMS.get('format');
-		$("#sim-format").html(options).val(simFormats[id] ? id : simFormats[SIM_DEFAULT_FORMAT] ? SIM_DEFAULT_FORMAT : formats[0].id).change();
+		var id = SIM_PARAMS.get('mod');
+		$("#sim-mod").html(options).val(simMods[id] ? id : simMods[SIM_DEFAULT_MOD] ? SIM_DEFAULT_MOD : mods[0].id).change();
 	});
 });

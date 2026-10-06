@@ -8,7 +8,9 @@ const vm = require('vm');
 const psDir = path.resolve(process.argv[2] || '../pokemon-showdown');
 const psDist = path.resolve(psDir, 'dist');
 const clientHost = process.argv[3] || 'play.pokemonshowdown.com';
-const CLIENT_SCRIPTS = ['data/pokedex.js', 'data/items.js', 'js/battle-dex-data.js', 'js/battle-dex.js'];
+const CLIENT_SCRIPTS = [
+	'data/pokedex.js', 'data/items.js', 'js/battle-dex-data.js', 'js/battle-dex.js', 'js/battle-dex-search.js', 'js/battle-tooltips.js',
+];
 const outDir = path.resolve('dist/sim-data');
 const esbuild = require(path.resolve(psDir, 'node_modules/esbuild'));
 const {Dex} = require(path.resolve(psDir, 'dist/sim/dex'));
@@ -36,21 +38,24 @@ const MOVE_KEYS = [
 
 fs.mkdirSync(outDir, {recursive: true});
 const formats = Dex.formats.all().filter(format => format.effectType === 'Format' && !format.team);
-const mods = new Set();
-const formatList = [];
+const mods = {};
 for (const format of formats) {
-	const ruleTable = Dex.formats.getRuleTable(format);
-	mods.add(format.mod);
-	formatList.push({
-		id: format.id,
-		name: format.name,
-		section: format.section,
-		mod: format.mod,
-		gameType: format.gameType,
-		fusion: ruleTable.has('infinitefusionmod'),
-		ability2: ruleTable.has('doubleabilitymod'),
-	});
+	const mod = mods[format.mod] || (mods[format.mod] = {id: format.mod, formats: 0, sections: {}, rules: {}});
+	const section = format.section.split(':')[0].replace(/ Formats$/, '');
+	mod.formats++;
+	mod.sections[section] = (mod.sections[section] || 0) + 1;
+	for (const [id] of Dex.formats.getRuleTable(format)) {
+		if (/^[a-z0-9]+mod$/.test(id) && Dex.formats.get(id).effectType === 'Rule') mod.rules[id] = (mod.rules[id] || 0) + 1;
+	}
 }
+const modList = Object.values(mods).map(mod => ({
+	id: mod.id,
+	section: Object.keys(mod.sections).sort((a, b) => mod.sections[b] - mod.sections[a])[0],
+	fusion: !!mod.rules.infinitefusionmod,
+	ability2: !!mod.rules.doubleabilitymod,
+	ruleset: Object.keys(mod.rules).filter(id => mod.rules[id] * 2 > mod.formats || id === 'infinitefusionmod' || id === 'doubleabilitymod')
+		.map(id => Dex.formats.get(id).name),
+}));
 
 async function loadClient() {
 	const context = vm.createContext({Config: {routes: {client: clientHost}}, document: {location: {protocol: 'https:'}}});
@@ -60,7 +65,7 @@ async function loadClient() {
 		if (!response.ok) throw new Error(`Could not download https://${clientHost}/${script}: ${response.status}`);
 		vm.runInContext(await response.text(), context, {filename: script});
 	}
-	return context.Dex;
+	return context;
 }
 
 function dump(mod, client) {
@@ -85,7 +90,7 @@ function dump(mod, client) {
 		const otherFormes = [...new Set([...specie.otherFormes || [], ...formes[specie.name] || []])]
 			.filter(forme => !EXCLUDED.includes(dex.species.get(forme).isNonstandard));
 		if (otherFormes.length) data.otherFormes = otherFormes;
-		data.icon = client.getPokemonIcon(specie.name);
+		data.icon = client.Dex.getPokemonIcon(specie.name);
 		species[specie.name] = data;
 	}
 	const moves = {'(No Move)': {bp: 0, category: 'Status', type: 'Normal'}};
@@ -119,7 +124,7 @@ function dump(mod, client) {
 		if (item.isGem) data.isGem = true;
 		if (typeBoost) data.typeBoost = typeBoost[1];
 		if (typeResist) data.typeResist = typeResist[1];
-		data.icon = client.getItemIcon(client.items.get(item.name));
+		data.icon = client.Dex.getItemIcon(client.Dex.items.get(item.name));
 		items[item.name] = data;
 	}
 	const abilities = dex.abilities.all()
@@ -154,24 +159,39 @@ function dump(mod, client) {
 			conditions.field.push(condition.name);
 		}
 	}
-	const legal = {};
+	const legal = new Set();
 	const names = Object.keys(species);
 	for (const format of formats.filter(entry => entry.mod === mod)) {
+		const ruleTable = Dex.formats.getRuleTable(format);
+		if (ruleTable.maxTeamSize > 6 || ruleTable.has('littlecup')) continue;
 		const validator = TeamValidator.get(format.id);
-		legal[format.id] = [];
 		for (const [i, name] of names.entries()) {
 			const specie = dex.species.get(name);
 			const set = {name, species: name, item: '', ability: '', moves: [], nature: '', gender: '', evs: {}, ivs: {}, level: 100};
-			if (!specie.battleOnly && !validator.checkSpecies(set, specie, specie, {})) legal[format.id].push(i);
+			if (!legal.has(i) && !specie.battleOnly && !validator.checkSpecies(set, specie, specie, {})) legal.add(i);
 		}
 	}
-	const typeIcons = Object.fromEntries(dex.types.all().filter(type => type.exists).map(type => [type.name, `${client.fxPrefix}types/${type.name}.png`]));
-	const output = {gen: dex.gen, species, moves, items, abilities, typeChart, typeIcons, conditions, legal};
+	const typeIcons = Object.fromEntries(dex.types.all().filter(type => type.exists).map(type => [type.name, `${client.Dex.fxPrefix}types/${type.name}.png`]));
+	const search = vm.runInContext('new BattleMoveSearch("move", "")', client);
+	search.dex = dex;
+	const moveNames = Object.keys(moves);
+	const pools = {};
+	for (const name in species) {
+		const specie = dex.species.get(name);
+		pools[name] = [[], []];
+		for (const id of dex.species.getMovePool(specie.id)) {
+			const move = dex.moves.get(id);
+			if (!moves[move.name] || move.category === 'Status' || !move.basePower || move.selfdestruct) continue;
+			const usable = search.moveIsNotUseless(move.id, specie, [], {ability: specie.abilities[0], moves: []});
+			pools[name][usable ? 0 : 1].push(moveNames.indexOf(move.name));
+		}
+	}
+	const output = {gen: dex.gen, species, moves, items, abilities, typeChart, typeIcons, conditions, legal: [...legal].sort((a, b) => a - b), pools};
 	fs.writeFileSync(path.join(outDir, `${mod}.json`), JSON.stringify(output));
 	console.log(`Wrote ${mod}.json`);
 }
 
-function bundle(mod) {
+function bundle(mod, client) {
 	const files = {};
 	for (const file of fs.readdirSync(path.join(psDist, 'data'))) {
 		if (file.endsWith('.js') && file !== 'pokemongo.js') files[`/data/${file.slice(0, -3)}`] = path.join(psDist, 'data', file);
@@ -193,6 +213,12 @@ function bundle(mod) {
 		}
 	}
 	files['/config/alt-formats'] = path.join(psDist, 'config/alt-formats.js');
+	const format = `module.exports = ${JSON.stringify(modList.find(entry => entry.id === mod))};`;
+	const guesser = `const {Dex, toID} = require('pokemon-showdown/sim/dex');
+const BattleNatures = ${vm.runInContext('JSON.stringify(BattleNatures)', client)};
+${vm.runInContext(`[BattleStatGuesser, ...Object.getOwnPropertyNames(BattleStatGuesser.prototype).filter(key => key !== 'constructor')
+	.map(key => \`BattleStatGuesser.prototype.\${key} = \${BattleStatGuesser.prototype[key]};\`)].join('\\n')`, client)}
+module.exports = BattleStatGuesser;`;
 	const table = Object.entries(files).map(([key, file]) => {
 		const target = key.endsWith('/learnsets') ? `sim-learnsets:${file}` : file;
 		return `\t${JSON.stringify(key)}: () => require(${JSON.stringify(target)}),`;
@@ -210,6 +236,8 @@ function bundle(mod) {
 			name: 'sim',
 			setup(build) {
 				build.onResolve({filter: /^sim-modules$/}, () => ({path: 'modules', namespace: 'sim'}));
+				build.onResolve({filter: /^sim-guesser$/}, () => ({path: 'guesser', namespace: 'sim'}));
+				build.onResolve({filter: /^sim-format$/}, () => ({path: 'format', namespace: 'sim'}));
 				build.onResolve({filter: /^sim-learnsets:/}, args => ({path: args.path.slice(14), namespace: 'sim-learnsets'}));
 				build.onResolve({filter: /^pokemon-showdown\//}, args => ({path: path.join(psDist, args.path.slice(17)) + '.js'}));
 				build.onResolve({filter: /^(fs|path|node:util|node:crypto)$/}, args => ({path: args.path, namespace: 'sim'}));
@@ -220,7 +248,8 @@ function bundle(mod) {
 					return fs.existsSync(file) ? {path: file} : {path: 'missing', namespace: 'sim'};
 				});
 				build.onLoad({filter: /.*/, namespace: 'sim'}, args => ({
-					contents: args.path === 'modules' ? `module.exports = {\n${table.join('\n')}\n};` : STUBS[args.path] || STUBS.empty,
+					contents: args.path === 'modules' ? `module.exports = {\n${table.join('\n')}\n};` :
+						args.path === 'guesser' ? guesser : args.path === 'format' ? format : STUBS[args.path] || STUBS.empty,
 					resolveDir: psDist,
 				}));
 				build.onLoad({filter: /.*/, namespace: 'sim-learnsets'}, args => ({
@@ -239,11 +268,11 @@ function bundle(mod) {
 
 (async () => {
 	const client = await loadClient();
-	for (const mod of mods) {
+	for (const mod in mods) {
 		dump(mod, client);
-		await bundle(mod);
+		await bundle(mod, client);
 		console.log(`Wrote ${mod}.js`);
 	}
-	fs.writeFileSync(path.join(outDir, 'formats.json'), JSON.stringify(formatList));
-	console.log(`Wrote formats.json`);
+	fs.writeFileSync(path.join(outDir, 'mods.json'), JSON.stringify(modList));
+	console.log(`Wrote mods.json`);
 })();
