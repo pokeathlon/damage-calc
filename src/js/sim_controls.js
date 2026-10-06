@@ -153,7 +153,7 @@ function installSimData(mod, data) {
 	calc.Generations.get = function (num) {
 		return num === data.gen ? generation : simGetGeneration.call(calc.Generations, num);
 	};
-	if (!simMod || simMod.id !== mod.id) loadSimWorker(mod.id);
+	if (!simMod || simMod.id !== mod.id) loadSimWorker(mod);
 	simMod = mod;
 	var names = Object.keys(data.species);
 	simLegal = {};
@@ -194,7 +194,7 @@ function loadSimMod(id) {
 	SIM_PARAMS.delete('format');
 	window.history.replaceState({}, document.title, window.location.pathname + '?' + SIM_PARAMS);
 	if (simData[id]) return installSimData(simMods[id], simData[id]);
-	$.getJSON("./sim-data/" + id + ".json", function (data) {
+	$.getJSON("./sim-data/" + id + ".json?" + (simMods[id].hash || ""), function (data) {
 		simData[id] = data;
 		if ($("#sim-mod").val() === id) installSimData(simMods[id], data);
 	});
@@ -202,7 +202,7 @@ function loadSimMod(id) {
 
 function loadSimWorker(mod) {
 	if (simWorker) simWorker.terminate();
-	simWorker = new Worker("./sim-data/" + mod + ".js");
+	simWorker = new Worker("./sim-data/" + mod.id + ".js?" + (mod.hash || ""));
 	simWorker.onmessage = function (event) {
 		var response = event.data;
 		if (response.side) {
@@ -985,7 +985,7 @@ $(document).ready(function () {
 	updateTheme();
 	$("#sim-notes-text").val(localStorage.getItem("notes") || "");
 	$("select.fusion").select2({dropdownAutoWidth: true, width: '100%'});
-	$.getJSON("./sim-data/mods.json", function (mods) {
+	$.ajax({url: "./sim-data/mods.json", dataType: "json", cache: false}).done(function (mods) {
 		var sections = {};
 		for (var i = 0; i < mods.length; i++) {
 			simMods[mods[i].id] = mods[i];

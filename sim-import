@@ -4,6 +4,7 @@
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
+const crypto = require('crypto');
 
 const psDir = path.resolve(process.argv[2] || '../pokemon-showdown');
 const psDist = path.resolve(psDir, 'dist');
@@ -272,6 +273,10 @@ module.exports = BattleStatGuesser;`;
 		dump(mod, client);
 		await bundle(mod, client);
 		console.log(`Wrote ${mod}.js`);
+		// Cache-buster for the page's worker/data URLs (nginx caches .js for a day).
+		const hash = crypto.createHash('md5');
+		for (const ext of ['js', 'json']) hash.update(fs.readFileSync(path.join(outDir, `${mod}.${ext}`)));
+		modList.find(entry => entry.id === mod).hash = hash.digest('hex').slice(0, 8);
 	}
 	fs.writeFileSync(path.join(outDir, 'mods.json'), JSON.stringify(modList));
 	console.log(`Wrote mods.json`);
