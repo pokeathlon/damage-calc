@@ -117,7 +117,8 @@ function makeSimButtons(names, type, name, side) {
 		var id = 'sim-' + calc.toID(names[i]) + (side || '');
 		var value = name === 'terrain' ? names[i].replace(/ Terrain$/, '') : names[i];
 		buf += '<input class="visually-hidden calc-trigger" type="' + type + '" name="' + name + '" value="' + value + '" id="' + id + '" />';
-		buf += '<label class="btn btn-xxxwide" for="' + id + '">' + names[i].replace(/([a-z])([A-Z])/g, '$1 $2') + '</label>';
+		var position = names.length < 2 ? '' : i === 0 ? ' btn-left' : i === names.length - 1 ? ' btn-right' : ' btn-mid';
+		buf += '<label class="btn btn-xxxwide' + position + '" for="' + id + '">' + names[i].replace(/([a-z])([A-Z])/g, '$1 $2') + '</label> ';
 	}
 	return buf;
 }
