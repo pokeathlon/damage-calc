@@ -37,6 +37,12 @@ const MOVE_KEYS = [
 	'overrideDefensivePokemon', 'breaksProtect', 'multihit', 'multiaccuracy',
 ];
 
+const handlers = condition => Object.keys(condition).filter(key => typeof condition[key] === 'function').sort()
+	.map(key => key + condition[key]).join();
+const standardConditions = new Set([
+	...Object.keys(Dex.data.Conditions), ...Dex.moves.all().filter(move => move.condition).map(move => move.id),
+].map(id => handlers(Dex.conditions.get(id))));
+
 fs.mkdirSync(outDir, {recursive: true});
 const formats = Dex.formats.all().filter(format => format.effectType === 'Format' && !format.team);
 const mods = {};
@@ -150,6 +156,7 @@ function dump(mod, client) {
 	for (const id of new Set(conditionIDs)) {
 		const condition = dex.conditions.get(id);
 		if (Dex.conditions.get(id).exists && Dex.moves.get(id).isNonstandard !== 'Custom') continue;
+		if (standardConditions.has(handlers(condition))) continue;
 		if (condition.effectType === 'Weather') {
 			conditions.weather.push(condition.name);
 		} else if (condition.effectType === 'Terrain') {
