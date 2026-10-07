@@ -196,6 +196,7 @@ function simulate(query, rolls, crit) {
 		return result;
 	};
 	const turns = [];
+	let turnStart = battle.log.length;
 	for (const roll of rolls) {
 		battle.randomizer = baseDamage => tr(tr(baseDamage * roll) / 100);
 		const activeMove = battle.dex.getActiveMove(query.move);
@@ -211,6 +212,7 @@ function simulate(query, rolls, crit) {
 				attacker.hasItem('loadeddice') ? 4 : activeMove.multihit[0] + 1;
 		}
 		damage = 0;
+		turnStart = battle.log.length;
 		battle.actions.useMove(activeMove, attacker, {
 			target: defender,
 			zMove: query.attacker.zmove ? activeMove.name : undefined,
@@ -236,6 +238,12 @@ function simulate(query, rolls, crit) {
 			effects.push(parts[3].replace(/^(item|ability): /, ''));
 		}
 	}
+	const lastTurn = [];
+	for (const line of battle.log.slice(turnStart)) {
+		if (line.startsWith('|t:|') || line.startsWith('|split|')) continue;
+		lastTurn.push(line.replace(/\|(\d+\/\d+|0)( [a-z]+)?(?=\||$)/g, '|'));
+		if (line.includes('|0 fnt')) break;
+	}
 	const key = JSON.stringify([
 		battle.getAllActive().map(target => [
 			target.species.id, target.hp, target.status, target.statusState, target.item, target.itemState,
@@ -243,15 +251,22 @@ function simulate(query, rolls, crit) {
 		]),
 		battle.field.weather, battle.field.terrain, Object.keys(battle.field.pseudoWeather),
 		battle.sides.map(side => side.sideConditions),
-	], (k, value) => (['target', 'source', 'sourceEffect', 'effectOrder'].includes(k) ? undefined : value));
+	], (k, value) => {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+		const copy = {};
+		for (const name of Object.keys(value)) {
+			if (!['target', 'source', 'sourceEffect', 'effectOrder'].includes(name)) copy[name] = value[name];
+		}
+		return copy;
+	});
 	return {
-		battle, attacker, defender, names, species, fieldState, attackerChange, turns, effects, key, boosts,
+		battle, attacker, defender, names, species, fieldState, attackerChange, turns, effects, lastTurn, key, boosts,
 		move: move || battle.dex.getActiveMove(query.move),
 		ko: defender.hp ? 0 : turns.length,
 	};
 }
 
-function koText(query, crit, first) {
+async function koText(query, crit, first, update) {
 	const effects = new Set();
 	let total = ROLLS.length;
 	let kos = 0;
@@ -277,18 +292,60 @@ function koText(query, crit, first) {
 			n = max.ko;
 			kos = total;
 			for (const effect of [...min.effects, ...max.effects]) effects.add(effect);
+		} else {
+			update(`possible ${max.ko}HKO`);
 		}
+		let deadline = performance.now() + 10;
+		const branch = async (state, i) => {
+			const result = simulate(query, [...state.rolls, ROLLS[i]], crit);
+			if (performance.now() > deadline) {
+				await pause();
+				deadline = performance.now() + 10;
+			}
+			return result;
+		};
 		while (!kos && n < 4) {
 			n++;
 			total *= ROLLS.length;
-			const next = new Map();
+			const branches = [];
 			for (const state of states.values()) {
-				for (const roll of ROLLS) {
-					const result = simulate(query, [...state.rolls, roll], crit);
-					if (result.ko) {
+				const results = [];
+				for (const i of [0, ROLLS.length - 1]) {
+					results[i] = await branch(state, i);
+					if (running.stale) return '';
+				}
+				branches.push([state, results]);
+			}
+			const final = branches.some(([, results]) => results[ROLLS.length - 1].ko);
+			const next = new Map();
+			for (const [state, results] of branches) {
+				let low = 0;
+				let high = ROLLS.length - 1;
+				while (final && results[high].ko && !results[low].ko && high - low > 1) {
+					const mid = Math.floor((low + high) / 2);
+					results[mid] = await branch(state, mid);
+					if (running.stale) return '';
+					if (results[mid].ko) {
+						high = mid;
+					} else {
+						low = mid;
+					}
+				}
+				const probed = [...ROLLS.keys()].filter(i => results[i]);
+				const threshold = probed.find(i => results[i].ko) ?? ROLLS.length;
+				const longest = probed.map(i => results[i].lastTurn).reduce((a, b) => (b.length > a.length ? b : a));
+				const monotonic = final && probed.every(i => !results[i].ko === i < threshold &&
+					results[i].lastTurn.every((line, j) => line === longest[j]));
+				for (const [i, roll] of ROLLS.entries()) {
+					if (!monotonic && !results[i]) {
+						results[i] = await branch(state, i);
+						if (running.stale) return '';
+					}
+					const result = results[i];
+					if (monotonic ? i >= threshold : result.ko) {
 						kos += state.weight;
-						for (const effect of result.effects) effects.add(effect);
-					} else if (result.attacker.hp) {
+						for (const effect of result ? result.effects : []) effects.add(effect);
+					} else if (!final && result.attacker.hp) {
 						const nextState = next.get(result.key);
 						if (nextState) {
 							nextState.weight += state.weight;
@@ -322,9 +379,11 @@ function statText(pokemon, stat) {
 	return `${pokemon.set.evs[stat]}${sign} ${pokemon.battle.dex.stats.shortNames[stat]}${ivs}`;
 }
 
-function calculate(query, full) {
+async function calculate(query, full, firstTurns, update) {
 	const crit = !!query.crit;
-	const first = ROLLS.map(roll => simulate(query, [roll], crit));
+	const id = JSON.stringify(query);
+	const first = (firstTurns && firstTurns.get(id)) || ROLLS.map(roll => simulate(query, [roll], crit));
+	if (firstTurns) firstTurns.set(id, first);
 	const {battle, attacker, defender, names, species, fieldState, move, boosts} = first[first.length - 1];
 	const damage = first.map(result => result.turns[0] || 0);
 	const result = {
@@ -391,16 +450,17 @@ function calculate(query, full) {
 		screens.length && `through ${listText(screens)}`,
 		crit && 'on a critical hit',
 	].filter(Boolean).join(' ');
-	result.ko = category !== 'Status' && damage[damage.length - 1] ? koText(query, crit, first) : '';
+	result.ko = category !== 'Status' && damage[damage.length - 1] ?
+		await koText(query, crit, first, ko => update({...result, ko, pending: true})) : '';
 	return result;
 }
 
-function run(calc, format, full) {
+async function run(calc, format, full, firstTurns, update) {
 	if (!calc) return null;
 	try {
 		const query = {...calc, format};
 		const error = validate(query);
-		return error ? {error} : calculate(query, full);
+		return error ? {error} : await calculate(query, full, firstTurns, update);
 	} catch (error) {
 		console.error(error);
 		return {error: `The simulator crashed on this calculation: ${error.message}`};
@@ -488,7 +548,16 @@ function getPresets(request, format) {
 }
 
 const queue = {main: null, box: null};
+const firstTurns = new Map();
+const channel = new MessageChannel();
 let running = null;
+
+function pause() {
+	return new Promise(resolve => {
+		channel.port1.onmessage = resolve;
+		channel.port2.postMessage(null);
+	});
+}
 
 async function work() {
 	while (queue.main || queue.box) {
@@ -496,17 +565,16 @@ async function work() {
 		const kind = request === queue.main ? 'main' : 'box';
 		queue[kind] = null;
 		const job = running = {kind, stale: false};
+		if (kind === 'main' && !request.full) firstTurns.clear();
 		const speeds = request.speed && getSpeeds(request.speed, request.format);
 		if (speeds) postMessage({id: request.id, speeds});
-		for (const full of request.rangesOnly ? [false] : [false, true]) {
-			const results = [];
-			for (const calc of request.calcs) {
-				results.push(run(calc, request.format, full));
-				await new Promise(resolveTick => setTimeout(resolveTick));
-				if (job.stale) break;
-			}
+		for (const [index, calc] of request.calcs) {
+			const result = await run(calc, request.format, !!request.full, kind === 'main' && firstTurns,
+				partial => postMessage({id: request.id, index, result: partial, full: true}));
 			if (job.stale) break;
-			postMessage({id: request.id, results, full: full || !!request.rangesOnly});
+			postMessage({id: request.id, index, result, full: !!request.full});
+			await pause();
+			if (job.stale) break;
 		}
 		running = null;
 	}
@@ -528,3 +596,13 @@ globalThis.onmessage = function (event) {
 	if (running && (running.kind === kind || kind === 'main')) running.stale = true;
 	if (!running) work();
 };
+
+try {
+	const dex = Dex.forFormat(FORMATS.singles);
+	const species = dex.species.all().find(entry => entry.exists && !entry.battleOnly).name;
+	const move = dex.moves.all().find(entry => entry.exists && entry.basePower && !entry.isZ && !entry.isMax).name;
+	const query = {format: 'singles', attacker: {species}, defender: {species}, move};
+	if (!validate(query)) {
+		for (const roll of ROLLS) simulate(query, [roll], false);
+	}
+} catch {}

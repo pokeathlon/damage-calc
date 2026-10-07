@@ -50,7 +50,12 @@ var simLegal = null;
 var simData = {};
 var simResults = null;
 var simSpeeds = null;
-var simWorker = null;
+var simWorkers = [];
+var simWorkerMod = null;
+var simCache = {};
+var simCacheSize = 0;
+var simMain = null;
+var simBox = null;
 var simRequest = 0;
 var simBoxRequest = 0;
 var simPresetRequest = 0;
@@ -153,7 +158,6 @@ function installSimData(mod, data) {
 	calc.Generations.get = function (num) {
 		return num === data.gen ? generation : simGetGeneration.call(calc.Generations, num);
 	};
-	if (!simMod || simMod.id !== mod.id) loadSimWorker(mod);
 	simMod = mod;
 	var names = Object.keys(data.species);
 	simLegal = {};
@@ -193,6 +197,7 @@ function loadSimMod(id) {
 	SIM_PARAMS.set('mod', id);
 	SIM_PARAMS.delete('format');
 	window.history.replaceState({}, document.title, window.location.pathname + '?' + SIM_PARAMS);
+	loadSimWorker(simMods[id]);
 	if (simData[id]) return installSimData(simMods[id], simData[id]);
 	$.getJSON("./sim-data/" + id + ".json?" + (simMods[id].hash || ""), function (data) {
 		simData[id] = data;
@@ -201,33 +206,83 @@ function loadSimMod(id) {
 }
 
 function loadSimWorker(mod) {
-	if (simWorker) simWorker.terminate();
-	simWorker = new Worker("./sim-data/" + mod.id + ".js?" + (mod.hash || ""));
-	simWorker.onmessage = function (event) {
-		var response = event.data;
-		if (response.side) {
-			var pokeInfo = $("#" + response.side);
-			if (pokeInfo.data("simPresetRequest") !== response.id) return;
-			var role = pokeInfo.data("simPresetRole") === true ? response.presets && response.presets.role : pokeInfo.data("simPresetRole");
-			pokeInfo.data("simPresets", response.presets);
-			showSimSpreads(pokeInfo);
-			if (role) applySimPreset(pokeInfo, response.presets && response.presets.sets[role] ? role : "Blank Set");
-		} else if (response.id === simRequest && response.speeds) {
-			simSpeeds = response.speeds;
-			$("#p1 .sp .totalMod").text(simSpeeds[0]);
-			$("#p2 .sp .totalMod").text(simSpeeds[1]);
-		} else if (response.id === simRequest) {
-			simResults = response.results;
-			showSimField();
-			showSimSpecies($("#p1"), 0);
-			showSimSpecies($("#p2"), 1);
-			simPerformCalculations();
-			if (simSelectedMove && !$(".locked-move").length) $("#" + simSelectedMove).prop("checked", true).change();
-			if (response.full && $("#sim-cc-auto").prop("checked")) requestSimBox();
-		} else if (response.id === simBoxRequest && simColorCodes) {
-			colorSimBox(response.results);
+	if (simWorkerMod === mod) return;
+	for (var i = 0; i < simWorkers.length; i++) simWorkers[i].terminate();
+	simWorkerMod = mod;
+	simWorkers = [];
+	simCache = {};
+	simCacheSize = 0;
+	var count = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+	for (var j = 0; j < count; j++) {
+		var worker = new Worker("./sim-data/" + mod.id + ".js?" + (mod.hash || ""));
+		worker.onmessage = receiveSimResponse;
+		simWorkers.push(worker);
+	}
+}
+
+function receiveSimResponse(event) {
+	var response = event.data;
+	if (response.side) {
+		var pokeInfo = $("#" + response.side);
+		if (pokeInfo.data("simPresetRequest") !== response.id) return;
+		var role = pokeInfo.data("simPresetRole") === true ? response.presets && response.presets.role : pokeInfo.data("simPresetRole");
+		pokeInfo.data("simPresets", response.presets);
+		showSimSpreads(pokeInfo);
+		if (role) applySimPreset(pokeInfo, response.presets && response.presets.sets[role] ? role : "Blank Set");
+		return;
+	}
+	var request = response.id === simRequest ? simMain : response.id === simBoxRequest ? simBox : null;
+	if (!request) return;
+	if (response.speeds) {
+		simCache[request.speedKey] = {result: response.speeds};
+		simSpeeds = response.speeds;
+		$("#p1 .sp .totalMod").text(simSpeeds[0]);
+		$("#p2 .sp .totalMod").text(simSpeeds[1]);
+		return;
+	}
+	request.results[response.index] = response.result;
+	if (!response.result.pending) {
+		if (++simCacheSize > 5000) {
+			simCache = {};
+			simCacheSize = 1;
 		}
-	};
+		simCache[request.keys[response.index]] = {result: response.result, full: response.full};
+	}
+	if (request === simBox) {
+		if (simColorCodes && !--request.remaining) colorSimBox(request.results);
+	} else if (!response.full) {
+		if (--request.ranges) return;
+		showSimResults();
+		requestSimFull();
+	} else {
+		if (!response.result.pending) request.full--;
+		showSimResults();
+		if (!request.full && $("#sim-cc-auto").prop("checked")) requestSimBox();
+	}
+}
+
+function showSimResults() {
+	simResults = simMain.results;
+	showSimField();
+	showSimSpecies($("#p1"), 0);
+	showSimSpecies($("#p2"), 1);
+	simPerformCalculations();
+	if (simSelectedMove && !$(".locked-move").length) $("#" + simSelectedMove).prop("checked", true).change();
+}
+
+function requestSimFull() {
+	var id = $(".result-move:checked").attr("id") || '';
+	var selected = 2 * (id.slice(-1) - 1) + (id.charAt(10) === 'R' ? 1 : 0);
+	var jobs = simWorkers.map(function () {
+		return [];
+	});
+	for (var i = 0; i < simMain.jobs.length; i++) {
+		var index = simMain.jobs[i];
+		jobs[simMain.owners[index]][index === selected ? 'unshift' : 'push']([index, simMain.calcs[index]]);
+	}
+	for (var j = 0; j < simWorkers.length; j++) {
+		if (jobs[j].length) simWorkers[j].postMessage({id: simMain.id, format: simMain.format, calcs: jobs[j], full: true});
+	}
 }
 
 function showSimField() {
@@ -420,7 +475,7 @@ SimResult.prototype.fullDesc = function (notation) {
 	var damage = range[0] + '-' + range[1] + ' (' + this.display(range[0], this.data.maxhp, notation) + ' - ' +
 		this.display(range[1], this.data.maxhp, notation) + notation + ')';
 	if (!this.data.description) return this.move.name + ': ' + damage + (this.data.damage ? ' -- simulating...' : '');
-	return this.data.description + ': ' + damage + (this.data.ko ? ' -- ' + this.data.ko : '');
+	return this.data.description + ': ' + damage + (this.data.ko ? ' -- ' + this.data.ko : '') + (this.data.pending ? ' (simulating...)' : '');
 };
 
 SimResult.prototype.desc = function () {
@@ -428,7 +483,7 @@ SimResult.prototype.desc = function () {
 };
 
 performCalculations = function () {
-	if (!simMod) return;
+	if (!simMod || simWorkerMod !== simMod) return;
 	var p1info = $("#p1");
 	var p2info = $("#p2");
 	var p1 = createPokemon(p1info);
@@ -441,11 +496,36 @@ performCalculations = function () {
 		calcs.push(makeSimQuery(p1, p2, p1.moves[i], p1field, p1info, p2info));
 		calcs.push(makeSimQuery(p2, p1, p2.moves[i], p2field, p2info, p1info));
 	}
+	var format = simGameType();
+	var speed = makeSimQuery(p1, p2, {}, p1field, p1info, p2info);
 	simRequest++;
-	simSpeeds = null;
-	simWorker.postMessage({
-		id: simRequest, format: simGameType(), calcs: calcs, speed: makeSimQuery(p1, p2, {}, p1field, p1info, p2info)
+	simMain = {
+		id: simRequest, format: format, calcs: calcs, speedKey: 'speed' + format + JSON.stringify(speed),
+		keys: [], results: [], owners: [], jobs: []
+	};
+	simSpeeds = simCache[simMain.speedKey] ? simCache[simMain.speedKey].result : null;
+	var jobs = simWorkers.map(function () {
+		return [];
 	});
+	for (var j = 0; j < calcs.length; j++) {
+		if (!calcs[j]) continue;
+		var key = simMain.keys[j] = format + JSON.stringify(calcs[j]);
+		if (simCache[key] && simCache[key].full) {
+			simMain.results[j] = simCache[key].result;
+		} else {
+			simMain.owners[j] = simMain.jobs.length % simWorkers.length;
+			jobs[simMain.owners[j]].push([j, calcs[j]]);
+			simMain.jobs.push(j);
+		}
+	}
+	simMain.ranges = simMain.full = simMain.jobs.length;
+	for (var k = 0; k < simWorkers.length; k++) {
+		simWorkers[k].postMessage({id: simRequest, format: format, calcs: jobs[k], speed: !k && !simSpeeds ? speed : null});
+	}
+	if (!simMain.jobs.length) {
+		showSimResults();
+		if ($("#sim-cc-auto").prop("checked")) requestSimBox();
+	}
 	showSimIcons();
 };
 
@@ -583,7 +663,7 @@ function showSimBox() {
 
 function requestSimBox() {
 	var mons = $("#sim-box .sim-box-mon");
-	if (!mons.length || !simMod || !simColorCodes) return;
+	if (!mons.length || !simMod || !simColorCodes || simWorkerMod !== simMod) return;
 	var p2info = $("#p2");
 	var p2 = createPokemon(p2info);
 	var field = createField();
@@ -596,8 +676,25 @@ function requestSimBox() {
 		}
 		$(this).data({hp: mon.curHP(), foeHP: p2.curHP()});
 	});
+	var format = simGameType();
 	simBoxRequest--;
-	simWorker.postMessage({id: simBoxRequest, format: simGameType(), calcs: calcs, rangesOnly: true});
+	simBox = {id: simBoxRequest, keys: [], results: [], remaining: 0};
+	var jobs = simWorkers.map(function () {
+		return [];
+	});
+	for (var i = 0; i < calcs.length; i++) {
+		if (!calcs[i]) continue;
+		var key = simBox.keys[i] = format + JSON.stringify(calcs[i]);
+		if (simCache[key]) {
+			simBox.results[i] = simCache[key].result;
+		} else {
+			jobs[simBox.remaining++ % jobs.length].push([i, calcs[i]]);
+		}
+	}
+	for (var j = 0; j < simWorkers.length; j++) {
+		simWorkers[j].postMessage({id: simBoxRequest, format: format, calcs: jobs[j], rangesOnly: true});
+	}
+	if (!simBox.remaining) colorSimBox(simBox.results);
 }
 
 function colorSimBox(results) {
@@ -641,7 +738,7 @@ function colorSimBox(results) {
 }
 
 function requestSimPresets(pokeInfo, role) {
-	if (!simMod || !simWorker) return;
+	if (!simMod || simWorkerMod !== simMod) return;
 	var data = simData[simMod.id];
 	var moveNames = Object.keys(data.moves);
 	var setName = pokeInfo.find("input.set-selector").val();
@@ -661,7 +758,7 @@ function requestSimPresets(pokeInfo, role) {
 	};
 	simPresetRequest--;
 	pokeInfo.data({simPresetRequest: simPresetRequest, simPresetRole: role});
-	simWorker.postMessage({
+	simWorkers[0].postMessage({
 		id: simPresetRequest, side: pokeInfo.attr("id"), format: simGameType(),
 		presets: {set: set, usable: names(0), other: names(1)}
 	});
