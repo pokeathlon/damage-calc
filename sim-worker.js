@@ -101,6 +101,17 @@ function simulate(query, rolls, crit) {
 	const field = query.field || {};
 	battle.random = (m, n) => (n ?? m ?? 1) - 1;
 	battle.randomChance = (numerator, denominator) => numerator >= denominator;
+	const getCallback = battle.getCallback;
+	battle.getCallback = function (target, effect, callbackName) {
+		const callback = getCallback.call(this, target, effect, callbackName);
+		const ally = typeof callback === 'function' && target.side &&
+			target.side.pokemon.find(other => !other.isActive && other.volatiles[effect.id]);
+		if (!ally) return callback;
+		return function (...args) {
+			this.effectState.target = ally;
+			return callback.apply(this, args);
+		};
+	};
 	const turnLoop = battle.turnLoop;
 	battle.turnLoop = () => {};
 	battle.setPlayer('p1', {team: [query.attacker, query.attackerAlly].filter(Boolean).map(set => ({moves: [query.move], ...set}))});
@@ -127,7 +138,7 @@ function simulate(query, rolls, crit) {
 	const attacker = battle.p1.active[0];
 	const defender = battle.p2.active[0];
 	const pokemon = [
-		[attacker, defender], [battle.p1.active[1], defender], [defender, attacker], [battle.p2.active[1], attacker],
+		[attacker, defender], [battle.p1.pokemon[1], defender], [defender, attacker], [battle.p2.pokemon[1], attacker],
 	].map(([target, foe], i) => [target, query[SLOTS[i]], foe]);
 	for (const [target, set] of pokemon) {
 		if (!target || !set) continue;
@@ -163,11 +174,21 @@ function simulate(query, rolls, crit) {
 	for (const [target, set, foe] of pokemon) {
 		if (!target || !set) continue;
 		if (set.status) target.setStatus(set.status, foe, null, true);
-		for (const id of set.volatiles || []) target.addVolatile(id, foe);
+		if (set.toxicCounter) target.statusState.stage = set.toxicCounter - 1;
+		for (const id of set.volatiles || []) {
+			target.addVolatile(id, foe);
+			if (!target.isActive && target.volatiles[id]) target.side.active[0].volatiles[id] = target.volatiles[id];
+		}
 		if (set.timesAttacked) target.timesAttacked = set.timesAttacked;
 		if (set.activeTurns !== undefined) target.activeTurns = set.activeTurns;
 		if (set.boosts) Object.assign(target.boosts, set.boosts);
 	}
+	if (query.metronome && attacker.volatiles['metronome']) {
+		Object.assign(attacker.volatiles['metronome'], {lastMove: toID(query.move), numConsecutive: query.metronome - 1});
+		attacker.moveLastTurnResult = true;
+	}
+	if (query.stellarUsed) attacker.stellarBoostedTypes = [...battle.dex.types.names()];
+	if (query.defender.switching) defender.switchFlag = true;
 
 	const names = [attacker, defender].map(target => target.species.name +
 		(target.m.fusion ? `/${battle.dex.species.get(target.m.fusion).name}` : ''));
@@ -185,7 +206,7 @@ function simulate(query, rolls, crit) {
 	let move;
 	let boosts;
 	let variable = false;
-	let moveType = '';
+	let moveType = (query.overrides || {}).type || '';
 	const powers = [];
 	const getDamage = battle.actions.getDamage;
 	battle.actions.getDamage = (source, target, activeMove, suppressMessages) => {
@@ -224,6 +245,7 @@ function simulate(query, rolls, crit) {
 	for (const roll of rolls) {
 		battle.randomizer = baseDamage => tr(tr(baseDamage * roll) / 100);
 		const activeMove = battle.dex.getActiveMove(query.move);
+		Object.assign(activeMove, query.overrides);
 		activeMove.accuracy = true;
 		const onModifyType = activeMove.onModifyType;
 		if (onModifyType && !turns.length) {
@@ -251,6 +273,7 @@ function simulate(query, rolls, crit) {
 			maxMove: attacker.volatiles['dynamax'] ? activeMove.name : undefined,
 		});
 		turns.push(damage);
+		defender.switchFlag = false;
 		if (turns.length === 1) attackerChange = attacker.hp - attackerHP;
 		if (!defender.hp || !attacker.hp || battle.ended) break;
 		battle.turnLoop();
@@ -422,8 +445,11 @@ async function calculate(query, full, firstTurns, update) {
 	if (firstTurns) firstTurns.set(id, first);
 	const {battle, attacker, defender, names, species, fieldState, move, boosts, power, moveType} = first[first.length - 1];
 	const damage = first.map(result => result.turns[0] || 0);
+	const times = query.times > 1 ? ROLLS.map(roll => simulate(query, Array(query.times).fill(roll), crit)) : [];
 	const result = {
-		damage, maxhp: defender.maxhp, species, field: fieldState, attackerMaxHP: attacker.maxhp,
+		damage: times.length ? times.map(({turns, ko}) =>
+			turns.reduce((a, b) => a + b) + (ko ? query.times - ko : 0) * turns[turns.length - 1]) : damage,
+		maxhp: defender.maxhp, species, field: fieldState, attackerMaxHP: attacker.maxhp,
 		attackerChange: [first[0].attackerChange, first[first.length - 1].attackerChange],
 	};
 	if (!full) return result;
@@ -450,8 +476,14 @@ async function calculate(query, full, firstTurns, update) {
 		]);
 	}
 	for (const slot of ['attackerAlly', 'defenderAlly']) {
-		if (!query[slot] || toID(query[slot].ability) === 'noability') continue;
-		candidates.push([slot, dex.abilities.get(query[slot].ability).name, {...query, [slot]: {...query[slot], ability: 'No Ability'}}]);
+		if (!query[slot]) continue;
+		if (toID(query[slot].ability) !== 'noability') {
+			candidates.push([slot, dex.abilities.get(query[slot].ability).name, {...query, [slot]: {...query[slot], ability: 'No Ability'}}]);
+		}
+		for (const id of query[slot].volatiles || []) {
+			const volatiles = query[slot].volatiles.filter(other => other !== id);
+			candidates.push([slot, dex.conditions.get(id).name, {...query, [slot]: {...query[slot], volatiles}}]);
+		}
 	}
 	if (battle.field.weather) {
 		const name = WEATHERS[battle.field.weather] || battle.field.getWeather().name.replace(/([a-z])([A-Z])/g, '$1 $2');
@@ -492,6 +524,7 @@ async function calculate(query, full, firstTurns, update) {
 		move.name,
 		(power || moveType) && `(${[power && `${power} BP`, moveType].filter(Boolean).join(' ')})`,
 		dex.moves.get(query.move).multihit && move.hit > 1 && `(${move.hit} hits)`,
+		query.times > 1 && `over ${query.times} turns`,
 		'vs.',
 		level(defender),
 		showStats && boost(boosts && boosts[1][defensiveStat]),

@@ -1,4 +1,4 @@
-/*global performCalculations: true, addToDex: true, getMoves: true, findSpecies, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
+/*global performCalculations: true, moves, addToDex: true, getMoves: true, findSpecies, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
 var SIM_PARAMS = new URLSearchParams(window.location.search);
 var SIM_CLIENT = SIM_PARAMS.get('client') || window.location.hostname.replace(/^calc\./, 'play.');
 var SIM_DOMAIN = SIM_CLIENT.replace(/^play\./, '');
@@ -43,6 +43,14 @@ var SIM_SIDE_CONDITIONS = {
 	cannonade: 'G-Max Cannonade', volcalith: 'G-Max Volcalith', isReflect: 'Reflect', isLightScreen: 'Light Screen',
 	isAuroraVeil: 'Aurora Veil', isTailwind: 'Tailwind'
 };
+var SIM_ALLY_ABILITIES = {
+	isFlowerGift: 'Flower Gift', isBattery: 'Battery', isPowerSpot: 'Power Spot', isSteelySpirit: 'Steely Spirit', isFriendGuard: 'Friend Guard'
+};
+var SIM_RUIN_ABILITIES = [
+	{isBeadsOfRuin: 'Beads of Ruin', isSwordOfRuin: 'Sword of Ruin'},
+	{isTabletsOfRuin: 'Tablets of Ruin', isVesselOfRuin: 'Vessel of Ruin'}
+];
+var SIM_MOVE_OVERRIDES = {basePower: 'bp', type: 'type', category: 'category'};
 
 var simMods = {};
 var simMod = null;
@@ -368,6 +376,7 @@ function makeSimSet(pokemon, pokeInfo, side) {
 		if (stat !== 'hp' && pokemon.boosts[stat]) set.boosts[stat] = pokemon.boosts[stat];
 	}
 	if (pokemon.status) set.status = pokemon.status;
+	if (pokemon.toxicCounter) set.toxicCounter = pokemon.toxicCounter;
 	if (pokemon.originalCurHP < pokemon.rawStats.hp) set.hp = pokemon.originalCurHP;
 	if (pokemon.teraType) {
 		set.teraType = pokemon.teraType;
@@ -400,11 +409,17 @@ function makeSimSet(pokemon, pokeInfo, side) {
 	return set;
 }
 
-function makeSimAlly(pokemon, side, defending) {
-	var ability = side.isFlowerGift ? 'Flower Gift' : defending ? (side.isFriendGuard ? 'Friend Guard' : 'No Ability') :
-		side.isBattery ? 'Battery' : side.isPowerSpot ? 'Power Spot' : side.isSteelySpirit ? 'Steely Spirit' : '';
-	if (!ability) return undefined;
-	return {species: ability === 'Flower Gift' ? 'Cherrim' : pokemon.name, ability: ability};
+function makeSimAlly(pokemon, pokeInfo, side, field, ruins) {
+	var ally = {species: side.isFlowerGift ? 'Cherrim' : pokemon.name, ability: 'No Ability', volatiles: []};
+	var abilities = simAbilities(pokemon, pokeInfo);
+	var held = [abilities.ability[0], abilities.ability2 && abilities.ability2[0]];
+	for (var key in SIM_ALLY_ABILITIES) {
+		if (side[key]) ally.volatiles.push('ability:' + calc.toID(SIM_ALLY_ABILITIES[key]));
+	}
+	for (key in ruins) {
+		if (field[key] && held.indexOf(ruins[key]) < 0) ally.volatiles.push('ability:' + calc.toID(ruins[key]));
+	}
+	return ally.volatiles.length ? ally : undefined;
 }
 
 function makeSimQuery(attacker, defender, move, field, attackerInfo, defenderInfo) {
@@ -430,6 +445,16 @@ function makeSimQuery(attacker, defender, move, field, attackerInfo, defenderInf
 	$(".sim-side input:checked").each(function () {
 		query.field[$(this).parent().hasClass(attackerSide) ? 'attackerSide' : 'defenderSide'].push($(this).val());
 	});
+	if (move.timesUsed > 1) query.times = move.timesUsed;
+	if (move.timesUsedWithMetronome) query.metronome = move.timesUsedWithMetronome;
+	if (attacker.teraType === 'Stellar' && !move.isStellarFirstUse) query.stellarUsed = true;
+	for (var override in move.overrides) {
+		if (SIM_MOVE_OVERRIDES[override] && move.overrides[override] !== moves[move.originalName][SIM_MOVE_OVERRIDES[override]]) {
+			query.overrides = query.overrides || {};
+			query.overrides[override] = move.overrides[override];
+		}
+	}
+	if (field.defenderSide.isSwitching) query.defender.switching = true;
 	if (move.useZ) query.attacker.zmove = true;
 	if (field.isMagicRoom) query.field.pseudoWeather.push('Magic Room');
 	if (field.isWonderRoom) query.field.pseudoWeather.push('Wonder Room');
@@ -441,16 +466,15 @@ function makeSimQuery(attacker, defender, move, field, attackerInfo, defenderInf
 		}
 		for (var i = 0; i < sides[side].spikes; i++) query.field[side].push('Spikes');
 	}
-	if (simGameType() === 'doubles') {
-		query.attackerAlly = makeSimAlly(attacker, field.attackerSide, false);
-		query.defenderAlly = makeSimAlly(defender, field.defenderSide, true);
-	}
+	query.attackerAlly = makeSimAlly(attacker, attackerInfo, field.attackerSide, field, SIM_RUIN_ABILITIES[0]);
+	query.defenderAlly = makeSimAlly(defender, defenderInfo, field.defenderSide, field, SIM_RUIN_ABILITIES[1]);
 	var abilities = simAbilities(attacker, attackerInfo);
 	for (var slot in abilities) {
 		if (!abilities[slot][1]) continue;
 		if (abilities[slot][0] === 'Stakeout') query.defender.activeTurns = 0;
 		if ((abilities[slot][0] === 'Plus' || abilities[slot][0] === 'Minus') && simGameType() === 'doubles') {
-			query.attackerAlly = query.attackerAlly || {species: attacker.name, ability: 'Plus'};
+			query.attackerAlly = query.attackerAlly || {species: attacker.name};
+			query.attackerAlly.ability = 'Plus';
 		}
 	}
 	return query;
@@ -844,6 +868,7 @@ function showSimSets(pokeInfo, value) {
 		for (var set in setdex[names[i]]) {
 			var item = items[setdex[names[i]][set].item];
 			if (item && item.megaStone && item.megaStone[names[i]] && !setdex[names[i]][set].isCustomSet) continue;
+			if (setdex[names[i]][set].isCustomSet && (setdex[names[i]][set].box || "p1") !== pokeInfo.attr("id")) continue;
 			options += '<option value="' + names[i] + ' (' + set + ')"' + (setdex[names[i]][set].isCustomSet ? ' class="sim-custom"' : '') + '>' + set + '</option>';
 		}
 		if (grouped) options += '</optgroup>';
@@ -979,6 +1004,8 @@ $(".field-info").closest("[role='region']").after(
 $("[aria-labelledby='selectWeatherInstruction']").append("<div class=\"sim-weather sim-conditions\"></div>");
 $("[aria-labelledby='selectTerrainInstruction']").append("<span class=\"sim-terrain sim-conditions\"></span>");
 $("#gravity").parent().after("<div class=\"sim-field sim-conditions\"></div>");
+$(".poke-info .base").prop("readonly", true);
+$(".poke-info .type1, .poke-info .type2").prop("disabled", true);
 $("#default-level-100").before(
 	"<input class=\"visually-hidden calc-trigger\" type=\"radio\" name=\"defaultLevel\" value=\"120\" id=\"default-level-120\" />" +
 	"<label class=\"btn btn-wide btn-left\" for=\"default-level-120\">Level 120</label>"
@@ -1123,9 +1150,14 @@ $(".sim-box-panel").on("click", ".sim-box-mon", function () {
 	var panels = mon.closest(".sim-box-panel").add(panel);
 	if (panels.length > 1) {
 		var customSets = JSON.parse(localStorage.customsets);
-		customSets[set.substring(0, set.indexOf(" ("))][set.substring(set.indexOf("(") + 1, set.lastIndexOf(")"))].box = panel.prev(".poke-info").attr("id");
+		var species = set.substring(0, set.indexOf(" ("));
+		var name = set.substring(set.indexOf("(") + 1, set.lastIndexOf(")"));
+		customSets[species][name].box = setdex[species][name].box = panel.prev(".poke-info").attr("id");
 		localStorage.customsets = JSON.stringify(customSets);
 		mon.attr("class", "sim-box-mon");
+		$(".poke-info").each(function () {
+			showSimSets($(this), $(this).find("select.set").val());
+		});
 	}
 	var target = $(event.target).closest(".sim-box-mon");
 	if (target.length && target[0] !== mon[0]) {
