@@ -65,7 +65,7 @@ header .nav {
     padding-left: 4px;
     vertical-align: middle;
 }
-.sim-fusion, .sim-spread {
+.sim-fusion, .sim-set, .sim-spread {
     align-items: center;
     gap: 4px;
 }
@@ -99,16 +99,21 @@ header .nav {
     filter: none;
     opacity: 1;
 }
-.sim-spread {
+.sim-set, .sim-spread {
     display: flex;
-    margin: 1em 0;
     contain: inline-size;
 }
-.sim-spread label {
+.sim-set {
+    margin: 1em 0 4px;
+}
+.sim-spread {
+    margin: 4px 0 1em;
+}
+.sim-set label, .sim-spread label {
     flex: none;
     width: 5em;
 }
-.sim-spread select {
+.sim-set select, .sim-spread select {
     flex: 1;
     width: 0;
     min-width: 0;

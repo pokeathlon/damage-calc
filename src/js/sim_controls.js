@@ -1,4 +1,4 @@
-/*global performCalculations: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs */
+/*global performCalculations: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
 var SIM_PARAMS = new URLSearchParams(window.location.search);
 var SIM_CLIENT = SIM_PARAMS.get('client') || window.location.hostname.replace(/^calc\./, 'play.');
 var SIM_DOMAIN = SIM_CLIENT.replace(/^play\./, '');
@@ -795,27 +795,75 @@ function requestSimPresets(pokeInfo, role) {
 function requestSimFusionPresets(pokeInfo) {
 	var role = pokeInfo.find("select.spread").val();
 	var presets = pokeInfo.data("simPresets");
+	showSimSets(pokeInfo, pokeInfo.find("select.set").val());
 	requestSimPresets(pokeInfo, pokeInfo.data("simPresetAuto") || (presets && presets.sets[role] ? role : ''));
 }
 
-function showSimSpreads(pokeInfo) {
+function showSimSets(pokeInfo, value) {
+	if (!simMod) return;
+	var items = simData[simMod.id].items;
 	var setName = pokeInfo.find("input.set-selector").val();
-	var set = setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")"));
-	var current = pokeInfo.find("select.spread").val() || set;
+	var names = [setName.substring(0, setName.indexOf(" (")), simFusion(pokeInfo)];
+	var grouped = names[1] && names[1] !== names[0];
+	var options = '<option value="">(none)</option>';
+	for (var i = 0; i < names.length; i++) {
+		if (!setdex[names[i]] || names.indexOf(names[i]) < i) continue;
+		if (grouped) options += '<optgroup label="' + names[i] + '">';
+		for (var set in setdex[names[i]]) {
+			var item = items[setdex[names[i]][set].item];
+			if (item && item.megaStone && item.megaStone[names[i]]) continue;
+			options += '<option value="' + names[i] + ' (' + set + ')">' + set + '</option>';
+		}
+		if (grouped) options += '</optgroup>';
+	}
+	pokeInfo.find("select.set").html(options).val(value);
+	if (!pokeInfo.find("select.set").val()) pokeInfo.find("select.set").val("");
+}
+
+function showSimSpreads(pokeInfo) {
+	var current = pokeInfo.find("select.spread").val();
 	var sets = (pokeInfo.data("simPresets") || {sets: {}}).sets;
-	var options = set === "Blank Set" ? '' : '<option value="' + set + '">' + set + '</option>';
+	var options = '';
 	for (var role in sets) {
 		options += '<option value="' + role + '">' + role + ': ' + sets[role].label + '</option>';
 	}
 	options += '<option value="Blank Set">Blank Set</option>';
 	pokeInfo.find("select.spread").html(options).val(current);
-	if (!pokeInfo.find("select.spread").val()) pokeInfo.find("select.spread").val(set);
+	if (!current) pokeInfo.find("select.spread").prop("selectedIndex", -1);
+}
+
+function applySimSet(pokeInfo, value) {
+	var species = value.substring(0, value.indexOf(" ("));
+	var set = correctHiddenPower(setdex[species][value.substring(value.indexOf("(") + 1, value.lastIndexOf(")"))]);
+	pokeInfo.data("simPresetAuto", false);
+	pokeInfo.find("select.spread").prop("selectedIndex", -1);
+	pokeInfo.find(".level").val(set.level === undefined ? 100 : set.level);
+	for (var stat in SIM_STATS) {
+		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(set.evs && set.evs[SIM_STATS[stat]] || 0);
+		pokeInfo.find("." + SIM_STATS[stat] + " .ivs").val(set.ivs && set.ivs[SIM_STATS[stat]] !== undefined ? set.ivs[SIM_STATS[stat]] : 31);
+	}
+	setSelectValueIfValid(pokeInfo.find(".nature"), set.nature, "Hardy");
+	setSelectValueIfValid(pokeInfo.find("select.ability"), set.ability, pokeInfo.find("select.ability").val());
+	pokeInfo.find("select.ability").change();
+	setSelectValueIfValid(pokeInfo.find("select.item"), set.item, "");
+	pokeInfo.find("select.item").change();
+	setSelectValueIfValid(pokeInfo.find(".teraType"), set.teraType, pokeInfo.find(".teraType").val());
+	for (var i = 0; i < 4; i++) {
+		var move = pokeInfo.find(".move" + (i + 1) + " select.move-selector");
+		setSelectValueIfValid(move, set.moves && set.moves[i], "(No Move)");
+		move.change();
+	}
+	calcHP(pokeInfo);
+	calcStats(pokeInfo);
+	totalEVs(pokeInfo);
+	PC_HANDLER();
 }
 
 function applySimPreset(pokeInfo, role) {
 	var presets = pokeInfo.data("simPresets");
 	var set = presets && presets.sets[role] || {evs: {}, nature: "Hardy", item: "", moves: []};
 	pokeInfo.data("simPresetAuto", presets && role === presets.role);
+	pokeInfo.find("select.set").val("");
 	pokeInfo.find("select.spread").val(role);
 	for (var stat in SIM_STATS) {
 		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(set.evs[stat] || 0);
@@ -863,8 +911,9 @@ $(".field-info > legend").prepend(simIcon()).append(simIcon());
 $(".poke-info input.set-selector").after(
 	"<div class=\"sim-fusion\"><button class=\"sim-fusion-button\" title=\"Fusion\"><img src=\"//" + SIM_CLIENT + "/fx/fused.png\" alt=\"Fusion\" /></button>" +
 	"<select class=\"fusion calc-trigger\"></select></div>" +
-	"<div class=\"sim-spread\"><label>Spread</label><select class=\"spread\"></select>" +
-	"<div class=\"sim-saved\">Saved!</div><button class=\"sim-save-button\" hidden>Save Changes</button></div>"
+	"<div class=\"sim-set\"><label>Set</label><select class=\"set\"></select>" +
+	"<div class=\"sim-saved\">Saved!</div><button class=\"sim-save-button\" hidden>Save Changes</button></div>" +
+	"<div class=\"sim-spread\"><label>Spread</label><select class=\"spread\"></select></div>"
 );
 $(".poke-info select.ability").parent().after(
 	"<div class=\"sim-ability2 hide\"><label>Ability 2</label> <select class=\"ability2 calc-trigger\"></select> " +
@@ -906,6 +955,11 @@ for (var simCodeGroup in SIM_COLOR_CODES) {
 $("#sim-cc-legend").append("<p>Color coding is intended to help, though some caveats and quirks are missed.</p>");
 makeSimFrame("sim-items", "Items", "");
 makeSimFrame("sim-notes", "Notes", "<textarea id=\"sim-notes-text\" cols=\"30\" rows=\"10\"></textarea>");
+for (var simGen in SIM_SETDEX) {
+	for (var simSpecies in SIM_SETDEX[simGen]) {
+		SETDEX[simGen][simSpecies] = $.extend({}, SETDEX[simGen][simSpecies], SIM_SETDEX[simGen][simSpecies]);
+	}
+}
 
 $("#default-level-120").change(function () {
 	$("#default-level-100").triggerHandler("change");
@@ -931,12 +985,13 @@ $(".sim-fusion-button").click(function () {
 $(".sim-save-button").click(function () {
 	var pokeInfo = $(this).closest(".poke-info");
 	$(this).prop("hidden", true);
-	var setName = pokeInfo.find("input.set-selector").val();
+	var setName = pokeInfo.find("select.set").val();
 	var name = setName.substring(0, setName.indexOf(" ("));
 	var set = setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")"));
 	ExportPokemon(pokeInfo);
 	$(".import-name-text").val(setdex[name] && setdex[name][set] && setdex[name][set].isCustomSet ? set : "Custom Set");
 	$("#import.bs-btn").click();
+	showSimSets(pokeInfo, createPokemon(pokeInfo).name + " (" + $(".import-name-text").val() + ")");
 	showSimBox();
 	pokeInfo.find(".sim-saved").show();
 	setTimeout(function () {
@@ -1062,19 +1117,25 @@ $(".set-selector").change(function () {
 	var pokeInfo = $(this).closest(".poke-info");
 	simSelectedMove = null;
 	pokeInfo.find(".sim-save-button").prop("hidden", true);
-	pokeInfo.data("simPresets", null).find("select.spread").val("");
+	pokeInfo.data("simPresets", null).find("select.spread").prop("selectedIndex", -1);
+	showSimSets(pokeInfo, $(this).val());
 	showSimSpreads(pokeInfo);
 	requestSimPresets(pokeInfo, / \(Blank Set\)$/.test($(this).val()));
 });
 
-$("select.spread").change(function () {
+$("select.set").change(function () {
 	var pokeInfo = $(this).closest(".poke-info");
 	var setName = pokeInfo.find("input.set-selector").val();
-	if ($(this).val() !== "Blank Set" && setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")")) === $(this).val()) {
-		pokeInfo.find("input.set-selector").change();
+	var species = setName.substring(0, setName.indexOf(" ("));
+	if ($(this).val()) {
+		applySimSet(pokeInfo, $(this).val());
 	} else {
-		applySimPreset(pokeInfo, $(this).val());
+		pokeInfo.find("input.set-selector").val(species + " (Blank Set)").change().select2("data", {id: species + " (Blank Set)", text: species});
 	}
+});
+
+$("select.spread").change(function () {
+	applySimPreset($(this).closest(".poke-info"), $(this).val());
 });
 
 $(".poke-info").on("change input", ".forme, .level, .gender, .evs, .ivs, .dvs, .nature, .ability, .item, .teraType, .gmaxToggle, .move-selector", function (event) {

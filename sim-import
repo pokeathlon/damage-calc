@@ -176,7 +176,9 @@ function dump(mod, client) {
 		for (const [i, name] of names.entries()) {
 			const specie = dex.species.get(name);
 			const set = {name, species: name, item: '', ability: '', moves: [], nature: '', gender: '', evs: {}, ivs: {}, level: 100};
-			if (!legal.has(i) && !specie.battleOnly && !validator.checkSpecies(set, specie, specie, {})) legal.add(i);
+			if (legal.has(i) || (specie.battleOnly && !specie.isMega && !specie.isPrimal)) continue;
+			if (specie.requiredItem && validator.checkItem(set, dex.items.get(specie.requiredItem), {})) continue;
+			if (!validator.checkSpecies(set, specie, specie, {})) legal.add(i);
 		}
 	}
 	const typeIcons = Object.fromEntries(dex.types.all().filter(type => type.exists).map(type => [type.name, `${client.Dex.fxPrefix}types/${type.name}.png`]));

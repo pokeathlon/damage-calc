@@ -585,9 +585,11 @@ function getPresets(request, format) {
 	guesser.dex = dex;
 	guesser.getStats = () => baseStats;
 	const stronger = baseStats.atk >= baseStats.spa ? 'Physical' : 'Special';
+	const required = dex.species.get(request.set.species).requiredItem;
 	const presets = {role: guesser.guessRole({...request.set, item: '', moves: pick(stronger)}), sets: {}};
 	for (const [role, [category, item, secondary]] of Object.entries(ROLES)) {
-		const set = {...request.set, item: item || '', moves: pick(category || stronger, secondary)};
+		if (item && required) continue;
+		const set = {...request.set, item: item || required || '', moves: pick(category || stronger, secondary)};
 		if (guesser.guessRole(set) === '?') continue;
 		const guess = guesser.guessEVs(set, role);
 		const nature = dex.natures.all().find(entry => entry.plus === guess.plusStat && entry.minus === guess.minusStat);
