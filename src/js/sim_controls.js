@@ -1,4 +1,4 @@
-/*global performCalculations: true, addToDex: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
+/*global performCalculations: true, addToDex: true, getMoves: true, findSpecies, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
 var SIM_PARAMS = new URLSearchParams(window.location.search);
 var SIM_CLIENT = SIM_PARAMS.get('client') || window.location.hostname.replace(/^calc\./, 'play.');
 var SIM_DOMAIN = SIM_CLIENT.replace(/^play\./, '');
@@ -70,6 +70,7 @@ var simSelectedMove = null;
 var simGetGeneration = calc.Generations.get;
 var simPerformCalculations = performCalculations;
 var simAddToDex = addToDex;
+var simGetMoves = getMoves;
 var simImportSide = null;
 
 function SimTable(entries) {
@@ -570,11 +571,25 @@ getFirstValidSetOption = function () {
 	return getSetOptions()[0];
 };
 
+getMoves = function (currentPoke, rows, x) {
+	for (var i = x; i < rows.length && findSpecies(rows[i]).offset === undefined; i++) {
+		if (rows[i].indexOf("Fusion: ") === 0) currentPoke.fusion = rows[i].slice(8).trim();
+	}
+	return simGetMoves(currentPoke, rows, x);
+};
+
 addToDex = function (poke) {
+	var side = simImportSide || "p1";
+	var name = poke.nameProp;
+	var sets = setdex[poke.name] || {};
+	for (var i = 2; sets[poke.nameProp] && sets[poke.nameProp].isCustomSet && (sets[poke.nameProp].box || "p1") !== side; i++) {
+		poke.nameProp = name + " " + i;
+	}
 	simAddToDex(poke);
-	if (!simImportSide) return;
 	var customSets = JSON.parse(localStorage.customsets);
-	customSets[poke.name][poke.nameProp].box = setdex[poke.name][poke.nameProp].box = simImportSide;
+	customSets[poke.name][poke.nameProp].box = side;
+	if (poke.fusion) customSets[poke.name][poke.nameProp].fusion = poke.fusion;
+	setdex[poke.name][poke.nameProp] = customSets[poke.name][poke.nameProp];
 	localStorage.customsets = JSON.stringify(customSets);
 };
 
@@ -1038,8 +1053,9 @@ $(".sim-save-button, .sim-name-button").click(function () {
 	}
 	ExportPokemon(pokeInfo);
 	$(".import-name-text").val(set);
+	simImportSide = !isNew && setdex[name] && setdex[name][set] ? setdex[name][set].box || "p1" : side;
 	$("#import.bs-btn").click();
-	setdex[name][set].box = side;
+	simImportSide = null;
 	if (simFusion(pokeInfo)) setdex[name][set].fusion = simFusion(pokeInfo);
 	var customSets = JSON.parse(localStorage.customsets);
 	customSets[name][set] = setdex[name][set];
