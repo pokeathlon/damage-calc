@@ -55,7 +55,7 @@ var simWorkerMod = null;
 var simCache = {};
 var simCacheSize = 0;
 var simMain = null;
-var simBox = null;
+var simBoxes = {};
 var simCalculationPending = false;
 var simCalculationStale = false;
 var simRenderFrame = null;
@@ -67,7 +67,6 @@ var simManualWeather = false;
 var simManualTerrain = false;
 var simItemSide = null;
 var simSelectedMove = null;
-var simColorCodes = false;
 var simGetGeneration = calc.Generations.get;
 var simPerformCalculations = performCalculations;
 
@@ -235,7 +234,7 @@ function receiveSimResponse(event) {
 		if (role) applySimPreset(pokeInfo, response.presets && response.presets.sets[role] ? role : "Blank Set");
 		return;
 	}
-	var request = response.id === simRequest ? simMain : response.id === simBoxRequest ? simBox : null;
+	var request = response.id === simRequest ? simMain : simBoxes[response.id];
 	if (!request) return;
 	if (response.speeds) {
 		simCache[request.speedKey] = {result: response.speeds};
@@ -252,8 +251,8 @@ function receiveSimResponse(event) {
 		}
 		simCache[request.keys[response.index]] = {result: response.result, full: response.full};
 	}
-	if (request === simBox) {
-		if (simColorCodes && !--request.remaining) colorSimBox(request.results);
+	if (request.panel) {
+		if (request.panel.hasClass("sim-cc-on") && !--request.remaining) colorSimBox(request.panel, request.results);
 	} else if (!response.full) {
 		if (--request.ranges) return;
 		showSimResults();
@@ -271,7 +270,7 @@ function receiveSimResponse(event) {
 				simRenderStale = false;
 			});
 		}
-		if (!request.full && $("#sim-cc-auto").prop("checked")) requestSimBox();
+		if (!request.full) requestSimBox($(".sim-box-panel").has(".sim-cc-auto:checked"));
 	}
 }
 
@@ -424,7 +423,7 @@ function makeSimQuery(attacker, defender, move, field, attackerInfo, defenderInf
 	$(".sim-field input:checked").each(function () {
 		query.field.pseudoWeather.push($(this).val());
 	});
-	var attackerSide = attackerInfo.attr("id") === "p2" ? "right" : "left";
+	var attackerSide = attackerInfo.attr("id") === "p2" || defenderInfo.attr("id") === "p1" ? "right" : "left";
 	$(".sim-side input:checked").each(function () {
 		query.field[$(this).parent().hasClass(attackerSide) ? 'attackerSide' : 'defenderSide'].push($(this).val());
 	});
@@ -552,7 +551,7 @@ function requestSimResults() {
 	}
 	if (!simMain.jobs.length) {
 		showSimResults();
-		if ($("#sim-cc-auto").prop("checked")) requestSimBox();
+		requestSimBox($(".sim-box-panel").has(".sim-cc-auto:checked"));
 	}
 	showSimIcons([p1, p2]);
 }
@@ -602,8 +601,10 @@ calculateAllMoves = function (gen, p1, p1field, p2, p2field) {
 	return results;
 };
 
-function simIcon(species) {
+function simIcon(species, fusion) {
 	var data = simMod && species && simData[simMod.id].species[species];
+	var fused = data && fusion && fusion !== species && simData[simMod.id].species[fusion];
+	if (fused) return '<span class="sim-icon sim-fused"><span style="' + data.icon + '"></span><span style="' + fused.icon + '"></span></span>';
 	return '<span class="sim-icon" style="' + (data ? data.icon : '') + '"></span>';
 }
 
@@ -621,7 +622,7 @@ function showSimIcons(pokemon) {
 	$("#p1, #p2").each(function (i) {
 		var pokeInfo = $(this);
 		var name = pokeInfo.find("input.set-selector").val() ? pokemon[i].name : '';
-		pokeInfo.children("legend").find(".sim-icon").replaceWith(simIcon(name));
+		pokeInfo.children("legend").find(".sim-icon").replaceWith(simIcon(name, simFusion(pokeInfo)));
 		pokeInfo.find(".sim-item-button").html(simItemIcon(pokeInfo.find("select.item").val()));
 	});
 	$(".field-info > legend .sim-icon").each(function (i) {
@@ -658,75 +659,81 @@ function showSimItems() {
 	$("#sim-items .sim-frame-body").html(buf);
 }
 
-function simBoxSets() {
-	var sets = [];
-	var customSets = localStorage.customsets ? JSON.parse(localStorage.customsets) : {};
-	for (var species in customSets) {
-		if (!setdex || !setdex[species]) continue;
-		for (var set in customSets[species]) sets.push(species + " (" + set + ")");
-	}
-	return sets;
-}
-
 function showSimBox() {
-	var sets = simBoxSets();
-	var trashed = $("#sim-trash .sim-box-mon").map(function () {
-		return $(this).data("set");
-	}).get();
-	var box = '';
-	var trash = '';
-	for (var i = 0; i < sets.length; i++) {
-		var mon = '<span class="sim-box-mon" draggable="true" title="' + sets[i] + '" data-set="' + sets[i] + '">' +
-			simIcon(sets[i].substring(0, sets[i].indexOf(" ("))) + '</span>';
-		if (trashed.indexOf(sets[i]) >= 0) {
-			trash += mon;
-		} else {
-			box += mon;
+	var customSets = localStorage.customsets ? JSON.parse(localStorage.customsets) : {};
+	$(".sim-box-panel").each(function () {
+		var panel = $(this);
+		var side = panel.prev(".poke-info").attr("id");
+		var trashed = panel.find(".sim-trash .sim-box-mon").map(function () {
+			return $(this).data("set");
+		}).get();
+		var box = '';
+		var trash = '';
+		for (var species in customSets) {
+			if (!setdex || !setdex[species]) continue;
+			for (var name in customSets[species]) {
+				var set = customSets[species][name];
+				if ((set.box || "p1") !== side) continue;
+				var title = species + (set.fusion ? " + " + set.fusion : "") + " (" + name + ")" + (set.item ? " @ " + set.item : "") + "&#10;" + (set.moves || []).join(" / ");
+				var mon = '<span class="sim-box-mon" draggable="true" title="' + title + '" data-set="' + species + ' (' + name + ')">' +
+					simIcon(species, set.fusion) + (set.item ? simItemIcon(set.item) : '') + '</span>';
+				if (trashed.indexOf(species + " (" + name + ")") >= 0) {
+					trash += mon;
+				} else {
+					box += mon;
+				}
+			}
 		}
-	}
-	$("#sim-box").html(box);
-	$("#sim-trash").html(trash);
-	if (simResults) requestSimBox();
+		panel.find(".sim-box").html(box);
+		panel.find(".sim-trash").html(trash);
+	});
+	if (simResults) requestSimBox($(".sim-box-panel"));
 }
 
-function requestSimBox() {
-	var mons = $("#sim-box .sim-box-mon");
-	if (!mons.length || !simMod || !simColorCodes || simWorkerMod !== simMod) return;
-	var p2info = $("#p2");
-	var p2 = createPokemon(p2info);
-	var field = createField();
-	var calcs = [];
-	mons.each(function () {
-		var mon = createPokemon($(this).data("set"));
-		for (var i = 0; i < 4; i++) {
-			calcs.push(makeSimQuery(mon, p2, mon.moves[i], field, $(), p2info));
-			calcs.push(makeSimQuery(p2, mon, p2.moves[i], field.clone().swap(), p2info, $()));
+function requestSimBox(panels) {
+	panels.each(function () {
+		var panel = $(this);
+		var mons = panel.find(".sim-box .sim-box-mon");
+		if (!mons.length || !simMod || !panel.hasClass("sim-cc-on") || simWorkerMod !== simMod) return;
+		var left = panel.prev(".poke-info").attr("id") === "p1";
+		var foeInfo = $(left ? "#p2" : "#p1");
+		var foe = createPokemon(foeInfo);
+		var field = left ? createField() : createField().swap();
+		var calcs = [];
+		mons.each(function () {
+			var mon = createPokemon($(this).data("set"));
+			for (var i = 0; i < 4; i++) {
+				calcs.push(makeSimQuery(mon, foe, mon.moves[i], field, $(), foeInfo));
+				calcs.push(makeSimQuery(foe, mon, foe.moves[i], field.clone().swap(), foeInfo, $()));
+			}
+			$(this).data({hp: mon.curHP(), foeHP: foe.curHP()});
+		});
+		var format = simGameType();
+		delete simBoxes[panel.data("simBoxRequest")];
+		simBoxRequest--;
+		var request = simBoxes[simBoxRequest] = {panel: panel, keys: [], results: [], remaining: 0};
+		panel.data("simBoxRequest", simBoxRequest);
+		var jobs = simWorkers.map(function () {
+			return [];
+		});
+		for (var i = 0; i < calcs.length; i++) {
+			if (!calcs[i]) continue;
+			var key = request.keys[i] = format + JSON.stringify(calcs[i]);
+			if (simCache[key]) {
+				request.results[i] = simCache[key].result;
+			} else {
+				jobs[request.remaining++ % jobs.length].push([i, calcs[i]]);
+			}
 		}
-		$(this).data({hp: mon.curHP(), foeHP: p2.curHP()});
-	});
-	var format = simGameType();
-	simBoxRequest--;
-	simBox = {id: simBoxRequest, keys: [], results: [], remaining: 0};
-	var jobs = simWorkers.map(function () {
-		return [];
-	});
-	for (var i = 0; i < calcs.length; i++) {
-		if (!calcs[i]) continue;
-		var key = simBox.keys[i] = format + JSON.stringify(calcs[i]);
-		if (simCache[key]) {
-			simBox.results[i] = simCache[key].result;
-		} else {
-			jobs[simBox.remaining++ % jobs.length].push([i, calcs[i]]);
+		for (var j = 0; j < simWorkers.length; j++) {
+			simWorkers[j].postMessage({id: simBoxRequest, format: format, calcs: jobs[j], rangesOnly: true});
 		}
-	}
-	for (var j = 0; j < simWorkers.length; j++) {
-		simWorkers[j].postMessage({id: simBoxRequest, format: format, calcs: jobs[j], rangesOnly: true});
-	}
-	if (!simBox.remaining) colorSimBox(simBox.results);
+		if (!request.remaining) colorSimBox(panel, request.results);
+	});
 }
 
-function colorSimBox(results) {
-	$("#sim-box .sim-box-mon").each(function (n) {
+function colorSimBox(panel, results) {
+	panel.find(".sim-box .sim-box-mon").each(function (n) {
 		var offense = '';
 		var defense = '';
 		var dealtMax = 0;
@@ -811,8 +818,8 @@ function showSimSets(pokeInfo, value) {
 		if (grouped) options += '<optgroup label="' + names[i] + '">';
 		for (var set in setdex[names[i]]) {
 			var item = items[setdex[names[i]][set].item];
-			if (item && item.megaStone && item.megaStone[names[i]]) continue;
-			options += '<option value="' + names[i] + ' (' + set + ')">' + set + '</option>';
+			if (item && item.megaStone && item.megaStone[names[i]] && !setdex[names[i]][set].isCustomSet) continue;
+			options += '<option value="' + names[i] + ' (' + set + ')"' + (setdex[names[i]][set].isCustomSet ? ' class="sim-custom"' : '') + '>' + set + '</option>';
 		}
 		if (grouped) options += '</optgroup>';
 	}
@@ -837,6 +844,12 @@ function applySimSet(pokeInfo, value) {
 	var set = correctHiddenPower(setdex[species][value.substring(value.indexOf("(") + 1, value.lastIndexOf(")"))]);
 	pokeInfo.data("simPresetAuto", false);
 	pokeInfo.find("select.spread").prop("selectedIndex", -1);
+	if (set.isCustomSet) {
+		pokeInfo.find("select.fusion").select2("val", set.fusion || pokeInfo.find("select.fusion").val());
+		pokeInfo.find(".sim-fusion").toggleClass("sim-open", !!set.fusion);
+		if (!set.fusion) restoreSimSpecies(pokeInfo);
+		requestSimFusionPresets(pokeInfo);
+	}
 	pokeInfo.find(".level").val(set.level === undefined ? 100 : set.level);
 	for (var stat in SIM_STATS) {
 		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(set.evs && set.evs[SIM_STATS[stat]] || 0);
@@ -911,8 +924,9 @@ $(".field-info > legend").prepend(simIcon()).append(simIcon());
 $(".poke-info input.set-selector").after(
 	"<div class=\"sim-fusion\"><button class=\"sim-fusion-button\" title=\"Fusion\"><img src=\"//" + SIM_CLIENT + "/fx/fused.png\" alt=\"Fusion\" /></button>" +
 	"<select class=\"fusion calc-trigger\"></select></div>" +
-	"<div class=\"sim-set\"><label>Set</label><select class=\"set\"></select>" +
-	"<div class=\"sim-saved\">Saved!</div><button class=\"sim-save-button\" hidden>Save Changes</button></div>" +
+	"<div class=\"sim-set\"><label>Set</label><select class=\"set\"></select><input class=\"sim-set-name\" placeholder=\"Set name\" />" +
+	"<div class=\"sim-saved\"></div><button class=\"sim-save-button\" hidden>Save</button><button class=\"sim-new-button\">Save as New</button>" +
+	"<button class=\"sim-name-button\">Save</button><button class=\"sim-cancel-button\">Cancel</button></div>" +
 	"<div class=\"sim-spread\"><label>Spread</label><select class=\"spread\"></select></div>"
 );
 $(".poke-info select.ability").parent().after(
@@ -920,18 +934,18 @@ $(".poke-info select.ability").parent().after(
 	"<input hidden type=\"checkbox\" title=\"Is this ability active?\" class=\"ability2Toggle calc-trigger\" /></div>"
 );
 $(".poke-info select.item").after("<button class=\"sim-item-button\"></button>");
-$("#p1").after(
-	"<fieldset class=\"sim-box-panel\"><div class=\"sim-box-label\">Box</div><div class=\"sim-box-list\" id=\"sim-box\"></div><hr />" +
-	"<div class=\"sim-cc\"><div class=\"sim-box-label\">Color Codes</div><button id=\"sim-cc-show\">Show</button>" +
-	"<button id=\"sim-cc-hide\" hidden>Hide</button><button id=\"sim-cc-refresh\" hidden>Refresh</button>" +
-	"<button id=\"sim-cc-info\" hidden>Color Code Explanation</button><div id=\"sim-cc-legend\" hidden></div>" +
-	"<div id=\"sim-cc-settings\" hidden><label><input type=\"checkbox\" id=\"sim-cc-speed\" checked />speed border</label>" +
-	"<label><input type=\"checkbox\" id=\"sim-cc-dmg\" checked />OHKO color</label>" +
-	"<label><input type=\"checkbox\" id=\"sim-cc-auto\" checked />auto-refresh</label>" +
-	"<label><input type=\"range\" id=\"sim-cc-width\" min=\"1\" max=\"5\" value=\"2\" />Speed Border width</label></div></div><hr />" +
-	"<div class=\"sim-box-label\">Trash</div><div class=\"sim-box-list\" id=\"sim-trash\"></div>" +
-	"<button id=\"sim-clear-box\">Remove Pok&eacute;mon from the box</button>" +
-	"<button id=\"sim-clear-trash\">Remove Pok&eacute;mon from the trash</button></fieldset>"
+$("#p1, #p2").after(
+	"<fieldset class=\"sim-box-panel\"><div class=\"sim-box-label\">Box</div><div class=\"sim-box-list sim-box\"></div><hr />" +
+	"<div class=\"sim-cc\"><div class=\"sim-box-label\">Color Codes</div><button class=\"sim-cc-show\">Show</button>" +
+	"<button class=\"sim-cc-hide\" hidden>Hide</button><button class=\"sim-cc-refresh\" hidden>Refresh</button>" +
+	"<button class=\"sim-cc-info\" hidden>Color Code Explanation</button><div class=\"sim-cc-legend\" hidden></div>" +
+	"<div class=\"sim-cc-settings\" hidden><label><input type=\"checkbox\" class=\"sim-cc-speed\" checked />speed border</label>" +
+	"<label><input type=\"checkbox\" class=\"sim-cc-dmg\" checked />OHKO color</label>" +
+	"<label><input type=\"checkbox\" class=\"sim-cc-auto\" checked />auto-refresh</label>" +
+	"<label><input type=\"range\" class=\"sim-cc-width\" min=\"1\" max=\"5\" value=\"2\" />Speed Border width</label></div></div><hr />" +
+	"<div class=\"sim-box-label\">Trash</div><div class=\"sim-box-list sim-trash\"></div>" +
+	"<button class=\"sim-clear-box\">Remove Pok&eacute;mon from the box</button>" +
+	"<button class=\"sim-clear-trash\">Remove Pok&eacute;mon from the trash</button></fieldset>"
 );
 $(".field-info").closest("[role='region']").after(
 	"<div role=\"region\"><fieldset class=\"sim-notes-panel\"><legend>Note</legend>" +
@@ -947,12 +961,12 @@ $("#default-level-100").before(
 $(".genSelection, .notationSelection, .modeSelection").hide();
 $(".main-title-text").text("Mod Selector:").after("<select id=\"sim-mod\"></select>");
 for (var simCodeGroup in SIM_COLOR_CODES) {
-	$("#sim-cc-legend").append("<div class=\"sim-box-label\">" + simCodeGroup + "</div>");
+	$(".sim-cc-legend").append("<div class=\"sim-box-label\">" + simCodeGroup + "</div>");
 	for (var simCode in SIM_COLOR_CODES[simCodeGroup]) {
-		$("#sim-cc-legend").append("<div><span class=\"sim-cc-swatch " + simCode + "\"></span>" + SIM_COLOR_CODES[simCodeGroup][simCode] + "</div>");
+		$(".sim-cc-legend").append("<div><span class=\"sim-cc-swatch " + simCode + "\"></span>" + SIM_COLOR_CODES[simCodeGroup][simCode] + "</div>");
 	}
 }
-$("#sim-cc-legend").append("<p>Color coding is intended to help, though some caveats and quirks are missed.</p>");
+$(".sim-cc-legend").append("<p>Color coding is intended to help, though some caveats and quirks are missed.</p>");
 makeSimFrame("sim-items", "Items", "");
 makeSimFrame("sim-notes", "Notes", "<textarea id=\"sim-notes-text\" cols=\"30\" rows=\"10\"></textarea>");
 for (var simGen in SIM_SETDEX) {
@@ -982,18 +996,58 @@ $(".sim-fusion-button").click(function () {
 	PC_HANDLER();
 });
 
-$(".sim-save-button").click(function () {
+$(".sim-new-button").click(function () {
 	var pokeInfo = $(this).closest(".poke-info");
-	$(this).prop("hidden", true);
+	var name = createPokemon(pokeInfo).name;
+	var base = [pokeInfo.find(".nature").val(), pokeInfo.find("select.item").val()].join(" ").trim() || "Custom Set";
+	var set = base;
+	for (var i = 2; setdex[name] && setdex[name][set]; i++) set = base + " " + i;
+	pokeInfo.find(".sim-set").addClass("sim-naming").find(".sim-set-name").val(set).select();
+});
+
+$(".sim-cancel-button").click(function () {
+	$(this).closest(".sim-set").removeClass("sim-naming");
+});
+
+$(".sim-set-name").keydown(function (event) {
+	if (event.key === "Enter") $(this).siblings(".sim-name-button").click();
+	if (event.key === "Escape") $(this).siblings(".sim-cancel-button").click();
+});
+
+$(".sim-save-button, .sim-name-button").click(function () {
+	var pokeInfo = $(this).closest(".poke-info");
+	var side = pokeInfo.attr("id");
+	var name = createPokemon(pokeInfo).name;
 	var setName = pokeInfo.find("select.set").val();
-	var name = setName.substring(0, setName.indexOf(" ("));
 	var set = setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")"));
+	var isNew = $(this).hasClass("sim-name-button");
+	if (isNew) {
+		var base = pokeInfo.find(".sim-set-name").val().replace(/["<>]/g, "").trim() || "Custom Set";
+		set = base;
+		for (var i = 2; setdex[name] && setdex[name][set]; i++) set = base + " " + i;
+	}
 	ExportPokemon(pokeInfo);
-	$(".import-name-text").val(setdex[name] && setdex[name][set] && setdex[name][set].isCustomSet ? set : "Custom Set");
+	$(".import-name-text").val(set);
 	$("#import.bs-btn").click();
-	showSimSets(pokeInfo, createPokemon(pokeInfo).name + " (" + $(".import-name-text").val() + ")");
+	setdex[name][set].box = side;
+	if (simFusion(pokeInfo)) setdex[name][set].fusion = simFusion(pokeInfo);
+	var customSets = JSON.parse(localStorage.customsets);
+	customSets[name][set] = setdex[name][set];
+	var saved = set;
+	for (var other in customSets[name]) {
+		if (!isNew || other === set || (customSets[name][other].box || "p1") !== side) continue;
+		if (JSON.stringify($.extend({}, customSets[name][other], {box: side})) === JSON.stringify(customSets[name][set])) saved = other;
+	}
+	if (saved !== set) {
+		delete customSets[name][set];
+		delete setdex[name][set];
+	}
+	localStorage.customsets = JSON.stringify(customSets);
+	pokeInfo.find(".sim-set").removeClass("sim-naming");
+	pokeInfo.find(".sim-save-button").prop("hidden", true);
+	showSimSets(pokeInfo, name + " (" + saved + ")");
 	showSimBox();
-	pokeInfo.find(".sim-saved").show();
+	pokeInfo.find(".sim-saved").text(saved === set ? "Saved!" : "Already saved as " + saved).show();
 	setTimeout(function () {
 		pokeInfo.find(".sim-saved").hide();
 	}, 1500);
@@ -1012,7 +1066,7 @@ $(".sim-item-button").click(function () {
 $("#sim-items").on("click", ".sim-item", function () {
 	if (!simItemSide) return;
 	simItemSide.find("select.item").val($(this).data("item")).change();
-	simItemSide.find(".sim-save-button").prop("hidden", false);
+	simItemSide.find(".sim-save-button").prop("hidden", !simItemSide.find("select.set option:selected").hasClass("sim-custom"));
 });
 
 $("#sim-open-notes").click(function () {
@@ -1025,7 +1079,7 @@ $("#sim-notes-text").on("input", function () {
 
 $(".sim-box-panel").on("click", ".sim-box-mon", function () {
 	var set = $(this).data("set");
-	$("#p1 input.set-selector").val(set).change().select2("data", {id: set, text: set});
+	$(this).closest(".sim-box-panel").prev(".poke-info").find("input.set-selector").val(set).change().select2("data", {id: set, text: set});
 }).on("dragstart", ".sim-box-mon", function (event) {
 	event.originalEvent.dataTransfer.setData("text/plain", $(this).data("set"));
 }).on("dragover", ".sim-box-list", function (event) {
@@ -1039,53 +1093,59 @@ $(".sim-box-panel").on("click", ".sim-box-mon", function () {
 	var mon = $(".sim-box-mon").filter(function () {
 		return $(this).data("set") === set;
 	});
+	var panel = $(this).closest(".sim-box-panel");
+	var panels = mon.closest(".sim-box-panel").add(panel);
+	if (panels.length > 1) {
+		var customSets = JSON.parse(localStorage.customsets);
+		customSets[set.substring(0, set.indexOf(" ("))][set.substring(set.indexOf("(") + 1, set.lastIndexOf(")"))].box = panel.prev(".poke-info").attr("id");
+		localStorage.customsets = JSON.stringify(customSets);
+		mon.attr("class", "sim-box-mon");
+	}
 	var target = $(event.target).closest(".sim-box-mon");
 	if (target.length && target[0] !== mon[0]) {
 		target.before(mon);
 	} else {
 		$(this).append(mon);
 	}
-	requestSimBox();
+	requestSimBox(panels);
 });
 
-$("#sim-cc-show, #sim-cc-hide").click(function () {
-	simColorCodes = this.id === "sim-cc-show";
-	$("#sim-cc-show, #sim-cc-hide, #sim-cc-refresh, #sim-cc-info, #sim-cc-settings").each(function () {
+$(".sim-cc-show, .sim-cc-hide").click(function () {
+	var panel = $(this).closest(".sim-box-panel").toggleClass("sim-cc-on", $(this).hasClass("sim-cc-show"));
+	panel.find(".sim-cc-show, .sim-cc-hide, .sim-cc-refresh, .sim-cc-info, .sim-cc-settings").each(function () {
 		this.hidden = !this.hidden;
 	});
-	$("#sim-cc-legend").prop("hidden", true);
-	$("#sim-box .sim-box-mon").attr("class", "sim-box-mon");
-	requestSimBox();
+	panel.find(".sim-cc-legend").prop("hidden", true);
+	panel.find(".sim-box .sim-box-mon").attr("class", "sim-box-mon");
+	requestSimBox(panel);
 });
 
-$("#sim-cc-refresh").click(requestSimBox);
-
-$("#sim-cc-info").click(function () {
-	$("#sim-cc-legend").prop("hidden", !$("#sim-cc-legend").prop("hidden"));
+$(".sim-cc-refresh").click(function () {
+	requestSimBox($(this).closest(".sim-box-panel"));
 });
 
-$("#sim-cc-speed, #sim-cc-dmg").change(function () {
-	$(".sim-box-panel").toggleClass(this.id + "-off", !this.checked);
+$(".sim-cc-info").click(function () {
+	var legend = $(this).siblings(".sim-cc-legend");
+	legend.prop("hidden", !legend.prop("hidden"));
 });
 
-$("#sim-cc-auto").change(function () {
-	if (this.checked) requestSimBox();
+$(".sim-cc-speed, .sim-cc-dmg").change(function () {
+	$(this).closest(".sim-box-panel").toggleClass(this.className + "-off", !this.checked);
 });
 
-$("#sim-cc-width").on("input change", function () {
-	$(".sim-box-panel")[0].style.setProperty("--sim-speed-width", this.value + "px");
+$(".sim-cc-auto").change(function () {
+	if (this.checked) requestSimBox($(this).closest(".sim-box-panel"));
 });
 
-$("#sim-clear-box").click(function () {
-	$("#clearSets").click();
-	showSimBox();
+$(".sim-cc-width").on("input change", function () {
+	$(this).closest(".sim-box-panel")[0].style.setProperty("--sim-speed-width", this.value + "px");
 });
 
-$("#sim-clear-trash").click(function () {
-	var trashed = $("#sim-trash .sim-box-mon");
-	if (!trashed.length || !confirm("Do you really want to remove " + (trashed.length > 1 ? trashed.length + " Pokémon" : "this Pokémon") + "?")) return;
+$(".sim-clear-box, .sim-clear-trash").click(function () {
+	var mons = $(this).closest(".sim-box-panel").find($(this).hasClass("sim-clear-box") ? ".sim-box .sim-box-mon" : ".sim-trash .sim-box-mon");
+	if (!mons.length || !confirm("Do you really want to remove " + (mons.length > 1 ? mons.length + " Pokémon" : "this Pokémon") + "?")) return;
 	var customSets = JSON.parse(localStorage.customsets);
-	trashed.each(function () {
+	mons.each(function () {
 		var set = $(this).data("set");
 		var species = set.substring(0, set.indexOf(" ("));
 		delete customSets[species][set.substring(set.indexOf("(") + 1, set.lastIndexOf(")"))];
@@ -1093,7 +1153,6 @@ $("#sim-clear-trash").click(function () {
 		if (setdex[species]) delete setdex[species][set.substring(set.indexOf("(") + 1, set.lastIndexOf(")"))];
 	});
 	localStorage.customsets = JSON.stringify(customSets);
-	$("#sim-trash").empty();
 	showSimBox();
 });
 
@@ -1117,7 +1176,15 @@ $(".set-selector").change(function () {
 	var pokeInfo = $(this).closest(".poke-info");
 	simSelectedMove = null;
 	pokeInfo.find(".sim-save-button").prop("hidden", true);
+	pokeInfo.find(".sim-set").removeClass("sim-naming");
 	pokeInfo.data("simPresets", null).find("select.spread").prop("selectedIndex", -1);
+	var setName = $(this).val();
+	var set = setdex[setName.substring(0, setName.indexOf(" ("))];
+	set = set && set[setName.substring(setName.indexOf("(") + 1, setName.lastIndexOf(")"))];
+	if (set && set.isCustomSet) {
+		pokeInfo.find("select.fusion").select2("val", set.fusion || pokeInfo.find("select.fusion").val());
+		pokeInfo.find(".sim-fusion").toggleClass("sim-open", !!set.fusion);
+	}
 	showSimSets(pokeInfo, $(this).val());
 	showSimSpreads(pokeInfo);
 	requestSimPresets(pokeInfo, / \(Blank Set\)$/.test($(this).val()));
@@ -1140,7 +1207,8 @@ $("select.spread").change(function () {
 
 $(".poke-info").on("change input", ".forme, .level, .gender, .evs, .ivs, .dvs, .nature, .ability, .item, .teraType, .gmaxToggle, .move-selector", function (event) {
 	if (event.target === this && (event.originalEvent || event.added)) {
-		$(this).closest(".poke-info").find(".sim-save-button").prop("hidden", false);
+		var pokeInfo = $(this).closest(".poke-info");
+		pokeInfo.find(".sim-save-button").prop("hidden", !pokeInfo.find("select.set option:selected").hasClass("sim-custom"));
 	}
 });
 

@@ -41,6 +41,17 @@ header .nav {
     position: relative;
     top: -2px;
 }
+.sim-fused > span, .poke-info .sim-fused > span {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 40px;
+    height: 30px;
+    clip-path: inset(0 50% 0 0);
+}
+.sim-fused > span + span, .poke-info .sim-fused > span + span {
+    clip-path: inset(0 0 0 50%);
+}
 .sim-item-icon, .poke-info .sim-item-icon {
     display: inline-block;
     width: 24px;
@@ -113,10 +124,16 @@ header .nav {
     flex: none;
     width: 5em;
 }
-.sim-set select, .sim-spread select {
+.sim-set select, .sim-spread select, .sim-set input.sim-set-name {
     flex: 1;
     width: 0;
     min-width: 0;
+}
+.sim-set input.sim-set-name, .sim-name-button, .sim-cancel-button, .sim-naming select, .sim-naming .sim-save-button, .sim-naming .sim-new-button {
+    display: none;
+}
+.sim-naming input.sim-set-name, .sim-naming .sim-name-button, .sim-naming .sim-cancel-button {
+    display: block;
 }
 .sim-saved {
     display: none;
@@ -175,6 +192,7 @@ header .nav {
     background: #722323;
 }
 .sim-box-mon {
+    position: relative;
     display: inline-block;
     box-sizing: border-box;
     margin: 0 4px 4px 0;
@@ -184,6 +202,12 @@ header .nav {
 }
 .sim-box-mon:hover {
     outline: 2px solid #1abc9c;
+}
+.sim-box-mon .sim-item-icon {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    zoom: 0.667;
 }
 .sim-cc-swatch {
     display: inline-block;
@@ -195,7 +219,7 @@ header .nav {
     outline: 1px solid #888;
     border-radius: 20%;
 }
-.sim-box-list .sim-box-mon, #sim-cc-legend .sim-cc-swatch {
+.sim-box-list .sim-box-mon, .sim-cc-legend .sim-cc-swatch {
     background-origin: border-box;
 }
 .sim-speed-faster {
@@ -246,11 +270,11 @@ header .nav {
 .sim-cc button {
     margin: 2px;
 }
-#sim-cc-legend, #sim-cc-settings {
+.sim-cc-legend, .sim-cc-settings {
     text-align: left;
     margin: 4px 0;
 }
-#sim-cc-settings label {
+.sim-cc-settings label {
     display: inline-flex;
     align-items: center;
     margin-right: 8px;
