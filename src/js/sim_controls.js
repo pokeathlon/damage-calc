@@ -1,4 +1,4 @@
-/*global performCalculations: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
+/*global performCalculations: true, addToDex: true, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
 var SIM_PARAMS = new URLSearchParams(window.location.search);
 var SIM_CLIENT = SIM_PARAMS.get('client') || window.location.hostname.replace(/^calc\./, 'play.');
 var SIM_DOMAIN = SIM_CLIENT.replace(/^play\./, '');
@@ -69,6 +69,8 @@ var simItemSide = null;
 var simSelectedMove = null;
 var simGetGeneration = calc.Generations.get;
 var simPerformCalculations = performCalculations;
+var simAddToDex = addToDex;
+var simImportSide = null;
 
 function SimTable(entries) {
 	this.entries = entries;
@@ -566,6 +568,14 @@ getSetOptions = function () {
 
 getFirstValidSetOption = function () {
 	return getSetOptions()[0];
+};
+
+addToDex = function (poke) {
+	simAddToDex(poke);
+	if (!simImportSide) return;
+	var customSets = JSON.parse(localStorage.customsets);
+	customSets[poke.name][poke.nameProp].box = setdex[poke.name][poke.nameProp].box = simImportSide;
+	localStorage.customsets = JSON.stringify(customSets);
 };
 
 loadDefaultLists = function () {
@@ -1160,6 +1170,12 @@ $(document).on("click", "#import", function () {
 	setTimeout(showSimBox, 0);
 });
 
+$(document).on("click", ".sim-import-right", function () {
+	simImportSide = "p2";
+	$("#import").click();
+	simImportSide = null;
+});
+
 $(document).on("click", "input[name='weather']", function () {
 	simManualWeather = true;
 });
@@ -1238,6 +1254,7 @@ $(document).ready(function () {
 	};
 	updateTheme();
 	$("#sim-notes-text").val(localStorage.getItem("notes") || "");
+	$("#import").text("Import to Left").after(" <button class=\"bs-btn bs-btn-default sim-import-right\">Import to Right</button>");
 	$("select.fusion").select2({dropdownAutoWidth: true, width: '100%'});
 	$.ajax({url: "./sim-data/mods.json", dataType: "json", cache: false}).done(function (mods) {
 		var sections = {};
