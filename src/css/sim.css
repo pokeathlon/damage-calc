@@ -102,6 +102,7 @@ header .nav {
 .sim-spread {
     display: flex;
     margin: 1em 0;
+    contain: inline-size;
 }
 .sim-spread label {
     flex: none;
