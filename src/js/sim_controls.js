@@ -56,6 +56,10 @@ var simCache = {};
 var simCacheSize = 0;
 var simMain = null;
 var simBox = null;
+var simCalculationPending = false;
+var simCalculationStale = false;
+var simRenderFrame = null;
+var simRenderStale = false;
 var simRequest = 0;
 var simBoxRequest = 0;
 var simPresetRequest = 0;
@@ -256,7 +260,17 @@ function receiveSimResponse(event) {
 		requestSimFull();
 	} else {
 		if (!response.result.pending) request.full--;
-		showSimResults();
+		if (simRenderFrame && response.index !== request.selected) {
+			simRenderStale = true;
+		} else {
+			showSimResults();
+			simRenderStale = false;
+			simRenderFrame = simRenderFrame || requestAnimationFrame(function () {
+				simRenderFrame = null;
+				if (simRenderStale && !simMain.ranges) showSimResults();
+				simRenderStale = false;
+			});
+		}
 		if (!request.full && $("#sim-cc-auto").prop("checked")) requestSimBox();
 	}
 }
@@ -272,7 +286,7 @@ function showSimResults() {
 
 function requestSimFull() {
 	var id = $(".result-move:checked").attr("id") || '';
-	var selected = 2 * (id.slice(-1) - 1) + (id.charAt(10) === 'R' ? 1 : 0);
+	var selected = simMain.selected = 2 * (id.slice(-1) - 1) + (id.charAt(10) === 'R' ? 1 : 0);
 	var jobs = simWorkers.map(function () {
 		return [];
 	});
@@ -483,6 +497,20 @@ SimResult.prototype.desc = function () {
 };
 
 performCalculations = function () {
+	if (simCalculationPending) {
+		simCalculationStale = true;
+		return;
+	}
+	requestSimResults();
+	simCalculationPending = true;
+	setTimeout(function () {
+		simCalculationPending = false;
+		if (simCalculationStale) requestSimResults();
+		simCalculationStale = false;
+	});
+};
+
+function requestSimResults() {
 	if (!simMod || simWorkerMod !== simMod) return;
 	var p1info = $("#p1");
 	var p2info = $("#p2");
@@ -526,8 +554,8 @@ performCalculations = function () {
 		showSimResults();
 		if ($("#sim-cc-auto").prop("checked")) requestSimBox();
 	}
-	showSimIcons();
-};
+	showSimIcons([p1, p2]);
+}
 
 getSetOptions = function () {
 	return Object.keys(pokedex).sort().filter(function (name) {
@@ -589,10 +617,10 @@ function simTypeIcon(type) {
 	return src ? '<img class="sim-item-type" src="' + src + '" alt="' + type + '" />' : '';
 }
 
-function showSimIcons() {
-	$("#p1, #p2").each(function () {
+function showSimIcons(pokemon) {
+	$("#p1, #p2").each(function (i) {
 		var pokeInfo = $(this);
-		var name = pokeInfo.find("input.set-selector").val() ? createPokemon(pokeInfo).name : '';
+		var name = pokeInfo.find("input.set-selector").val() ? pokemon[i].name : '';
 		pokeInfo.children("legend").find(".sim-icon").replaceWith(simIcon(name));
 		pokeInfo.find(".sim-item-button").html(simItemIcon(pokeInfo.find("select.item").val()));
 	});
