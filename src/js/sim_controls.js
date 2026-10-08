@@ -329,7 +329,7 @@ function restoreSimSpecies(pokeInfo) {
 	for (var stat in SIM_STATS) {
 		pokeInfo.find("." + SIM_STATS[stat] + " .base").val(species.bs[SIM_STATS[stat]]);
 	}
-	pokeInfo.find(".type1").val(species.types[0]);
+	pokeInfo.removeData("simTypes").find(".type1").val(species.types[0]);
 	pokeInfo.find(".type2").val(species.types[1] || "");
 	calcHP(pokeInfo);
 	calcStats(pokeInfo);
@@ -343,8 +343,10 @@ function showSimSpecies(pokeInfo, side) {
 		for (var stat in SIM_STATS) {
 			pokeInfo.find("." + SIM_STATS[stat] + " .base").val(species.baseStats[stat]);
 		}
-		pokeInfo.find(".type1").val(species.types[0]);
-		pokeInfo.find(".type2").val(species.types[1] || "");
+		if (!pokeInfo.data("simTypes")) {
+			pokeInfo.find(".type1").val(species.types[0]);
+			pokeInfo.find(".type2").val(species.types[1] || "");
+		}
 		calcHP(pokeInfo);
 		calcStats(pokeInfo);
 		return;
@@ -388,6 +390,7 @@ function makeSimSet(pokemon, pokeInfo, side) {
 	}
 	if (pokemon.alliesFainted) set.alliesFainted = pokemon.alliesFainted;
 	if (simFusion(pokeInfo)) set.fusion = simFusion(pokeInfo);
+	if (pokeInfo.data("simTypes")) set.types = pokemon.types[1] && pokemon.types[1] !== pokemon.types[0] ? pokemon.types : [pokemon.types[0]];
 	var abilities = simAbilities(pokemon, pokeInfo);
 	if (abilities.ability2) set.ability2 = abilities.ability2[0];
 	for (var slot in abilities) {
@@ -1005,7 +1008,6 @@ $("[aria-labelledby='selectWeatherInstruction']").append("<div class=\"sim-weath
 $("[aria-labelledby='selectTerrainInstruction']").append("<span class=\"sim-terrain sim-conditions\"></span>");
 $("#gravity").parent().after("<div class=\"sim-field sim-conditions\"></div>");
 $(".poke-info .base").prop("readonly", true);
-$(".poke-info .type1, .poke-info .type2").prop("disabled", true);
 $("#default-level-100").before(
 	"<input class=\"visually-hidden calc-trigger\" type=\"radio\" name=\"defaultLevel\" value=\"120\" id=\"default-level-120\" />" +
 	"<label class=\"btn btn-wide btn-left\" for=\"default-level-120\">Level 120</label>"
@@ -1043,6 +1045,7 @@ $("select.ability2").change(function () {
 $(".sim-fusion-button").click(function () {
 	var fusion = $(this).parent().toggleClass("sim-open");
 	if (!fusion.find("select.fusion").val()) return;
+	fusion.closest(".poke-info").removeData("simTypes");
 	if (!fusion.hasClass("sim-open")) restoreSimSpecies(fusion.closest(".poke-info"));
 	requestSimFusionPresets(fusion.closest(".poke-info"));
 	PC_HANDLER();
@@ -1274,6 +1277,14 @@ $(".poke-info").on("change input", ".forme, .level, .gender, .evs, .ivs, .dvs, .
 		var pokeInfo = $(this).closest(".poke-info");
 		pokeInfo.find(".sim-save-button").prop("hidden", !pokeInfo.find("select.set option:selected").hasClass("sim-custom"));
 	}
+});
+
+$(".type1, .type2").change(function () {
+	$(this).closest(".poke-info").data("simTypes", true);
+});
+
+$(".set-selector, .forme, select.fusion").change(function () {
+	$(this).closest(".poke-info").removeData("simTypes");
 });
 
 $(".set-selector, select.ability").change(function () {

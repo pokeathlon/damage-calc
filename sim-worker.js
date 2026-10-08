@@ -143,6 +143,7 @@ function simulate(query, rolls, crit) {
 	for (const [target, set] of pokemon) {
 		if (!target || !set) continue;
 		if (set.mega) battle.actions.runMegaEvo(target);
+		if (set.types) target.setType(set.types, true);
 		if (set.tera) {
 			if (typeof set.tera === 'string') target.teraType = battle.dex.types.get(set.tera).name;
 			battle.actions.terastallize(target);
