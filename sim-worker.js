@@ -428,6 +428,7 @@ async function koText(query, crit, first, update) {
 		text = `${result === min ? 'guaranteed' : 'possible'} ${n}HKO`;
 		for (const effect of result.effects) effects.add(effect);
 	}
+	if (!text && !max.attacker.hp) return 'attacker faints before it can KO';
 	return text && effects.size ? `${text} after ${listText([...effects])}` : text;
 }
 
