@@ -214,8 +214,8 @@ function bundle(mod, client) {
 		for (const file of fs.readdirSync(dir)) {
 			if (!file.endsWith('.js') || file === 'pokemongo.js') continue;
 			files[`/data/mods/${current}/${file.slice(0, -3)}`] = path.join(dir, file);
-			for (const match of fs.readFileSync(path.join(dir, file), 'utf8').matchAll(/require\("\.\.\/([a-z0-9]+)\//g)) {
-				dependencies.push(match[1]);
+			for (const match of fs.readFileSync(path.join(dir, file), 'utf8').matchAll(/require\("\.\.\/([a-z0-9]+)\/|^ {2}inherit: "([a-z0-9]+)"/gm)) {
+				if (fs.existsSync(path.join(psDist, 'data/mods', match[1] || match[2]))) dependencies.push(match[1] || match[2]);
 			}
 		}
 		for (const dependency of dependencies) {

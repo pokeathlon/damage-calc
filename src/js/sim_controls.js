@@ -1,4 +1,4 @@
-/*global performCalculations: true, moves, addToDex: true, getMoves: true, findSpecies, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
+/*global performCalculations: true, moves: true, pokedex: true, typeChart: true, items: true, abilities: true, GENERATION: true, startsWith, addToDex: true, getMoves: true, findSpecies, calculateAllMoves: true, getSetOptions: true, getFirstValidSetOption: true, loadDefaultLists: true, updateTheme: true, prefersDarkTheme: true, getSelectOptions, calcHP, calcStats, checkStatBoost, PC_HANDLER, ExportPokemon, setdex, totalEVs, SETDEX, SIM_SETDEX, correctHiddenPower, setSelectValueIfValid */
 var SIM_PARAMS = new URLSearchParams(window.location.search);
 var SIM_CLIENT = SIM_PARAMS.get('client') || window.location.hostname.replace(/^calc\./, 'play.');
 var SIM_DOMAIN = SIM_CLIENT.replace(/^play\./, '');
@@ -80,6 +80,7 @@ var simPerformCalculations = performCalculations;
 var simAddToDex = addToDex;
 var simGetMoves = getMoves;
 var simImportSide = null;
+var simChampions = $("#champions").prop("checked");
 
 function SimTable(entries) {
 	this.entries = entries;
@@ -135,7 +136,7 @@ function makeSimGeneration(data) {
 		types[id] = {kind: 'Type', id: id, name: name, effectiveness: data.typeChart[name]};
 	}
 	return {
-		num: data.gen,
+		num: simChampions ? 0 : data.gen,
 		species: new SimTable(species),
 		moves: new SimTable(moves),
 		items: new SimTable(items),
@@ -163,14 +164,14 @@ function simGameType() {
 
 function installSimData(mod, data) {
 	var generation = makeSimGeneration(data);
-	calc.SPECIES[data.gen] = data.species;
+	calc.SPECIES[generation.num] = data.species;
 	calc.SPECIES[9] = data.species;
-	calc.MOVES[data.gen] = data.moves;
-	calc.ITEMS[data.gen] = Object.keys(data.items);
-	calc.ABILITIES[data.gen] = data.abilities;
-	calc.TYPE_CHART[data.gen] = data.typeChart;
+	calc.MOVES[generation.num] = data.moves;
+	calc.ITEMS[generation.num] = Object.keys(data.items);
+	calc.ABILITIES[generation.num] = data.abilities;
+	calc.TYPE_CHART[generation.num] = data.typeChart;
 	calc.Generations.get = function (num) {
-		return num === data.gen ? generation : simGetGeneration.call(calc.Generations, num);
+		return num === generation.num ? generation : simGetGeneration.call(calc.Generations, num);
 	};
 	simMod = mod;
 	var names = Object.keys(data.species);
@@ -179,6 +180,20 @@ function installSimData(mod, data) {
 		simLegal[names[index]] = true;
 	});
 	$("#gen" + data.gen).prop("checked", true).change();
+	if (simChampions) {
+		GENERATION = generation;
+		pokedex = calc.SPECIES[0];
+		typeChart = calc.TYPE_CHART[0];
+		moves = calc.MOVES[0];
+		items = calc.ITEMS[0];
+		abilities = calc.ABILITIES[0];
+		$("select.type1, select.move-type").html(getSelectOptions(Object.keys(typeChart)));
+		$("select.type2").html("<option value=\"\">(none)</option>" + getSelectOptions(Object.keys(typeChart)));
+		$("select.move-selector").html(getSelectOptions(Object.keys(moves), true));
+		$("select.ability").html("<option value=\"\">(other)</option>" + getSelectOptions(abilities, true));
+		$("select.item").html("<option value=\"\">(none)</option>" + getSelectOptions(items, true));
+		$(".set-selector").val(getFirstValidSetOption().id).change();
+	}
 	var speciesOptions = "<option value=\"\">(none)</option>" + getSelectOptions(names.filter(function (name) {
 		return !simLegal || simLegal[name];
 	}), true);
@@ -833,7 +848,7 @@ function requestSimPresets(pokeInfo, role) {
 	var set = {
 		species: setName.substring(0, setName.indexOf(" (")),
 		ability: pokeInfo.find("select.ability").val(),
-		level: ~~pokeInfo.find(".level").val()
+		level: ~~pokeInfo.find(".level").val() || 50
 	};
 	if (simFusion(pokeInfo)) set.fusion = simFusion(pokeInfo);
 	var pools = [data.pools[set.species], data.pools[set.fusion]].filter(Boolean);
@@ -906,7 +921,9 @@ function applySimSet(pokeInfo, value) {
 	}
 	pokeInfo.find(".level").val(set.level === undefined ? 100 : set.level);
 	for (var stat in SIM_STATS) {
-		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(set.evs && set.evs[SIM_STATS[stat]] || 0);
+		var evs = set.evs && set.evs[SIM_STATS[stat]] || 0;
+		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(evs);
+		pokeInfo.find("." + SIM_STATS[stat] + " .sps").val(set.sps ? set.sps[SIM_STATS[stat]] || 0 : evs === 4 ? 1 : Math.ceil(evs / 8));
 		pokeInfo.find("." + SIM_STATS[stat] + " .ivs").val(set.ivs && set.ivs[SIM_STATS[stat]] !== undefined ? set.ivs[SIM_STATS[stat]] : 31);
 	}
 	setSelectValueIfValid(pokeInfo.find(".nature"), set.nature, "Hardy");
@@ -933,7 +950,7 @@ function applySimPreset(pokeInfo, role) {
 	pokeInfo.find("select.set").val("");
 	pokeInfo.find("select.spread").val(role);
 	for (var stat in SIM_STATS) {
-		pokeInfo.find("." + SIM_STATS[stat] + " .evs").val(set.evs[stat] || 0);
+		pokeInfo.find("." + SIM_STATS[stat] + " .evs, ." + SIM_STATS[stat] + " .sps").val(set.evs[stat] || 0);
 	}
 	pokeInfo.find(".nature").val(set.nature);
 	pokeInfo.find("select.item").val(set.item).change();
@@ -1302,7 +1319,9 @@ $("select.fusion").change(function () {
 });
 
 $("#sim-mod").change(function () {
-	loadSimMod($(this).val());
+	if (startsWith($(this).val(), "champions") === simChampions) return loadSimMod($(this).val());
+	SIM_PARAMS.set('mod', $(this).val());
+	window.location.href = (simChampions ? "./" : "champions.html") + "?" + SIM_PARAMS;
 });
 
 $(document).ready(function () {

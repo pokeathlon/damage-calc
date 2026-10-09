@@ -640,7 +640,7 @@ function getPresets(request, format) {
 		const nature = dex.natures.all().find(entry => entry.plus === guess.plusStat && entry.minus === guess.minusStat);
 		const evs = {};
 		for (const stat of dex.stats.ids()) {
-			if (guess[stat]) evs[stat] = guess[stat];
+			if (guess[stat]) evs[stat] = mod.startsWith('champions') ? (guess[stat] === 4 ? 1 : Math.ceil(guess[stat] / 8)) : guess[stat];
 		}
 		const label = Object.keys(evs).map(stat => `${evs[stat]} ${dex.stats.shortNames[stat]}`).join(' / ') +
 			(nature ? ` (+${dex.stats.shortNames[nature.plus]}, -${dex.stats.shortNames[nature.minus]})` : '');
