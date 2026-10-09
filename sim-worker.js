@@ -143,6 +143,16 @@ function simulate(query, rolls, crit) {
 	for (const [target, set] of pokemon) {
 		if (!target || !set) continue;
 		if (set.mega) battle.actions.runMegaEvo(target);
+		if (set.baseStats) {
+			target.species = battle.dex.deepClone(target.species);
+			target.species.baseStats = set.baseStats;
+			const stats = battle.spreadModify(set.baseStats, target.set);
+			if (target.species.maxHP) stats.hp = target.species.maxHP;
+			target.baseMaxhp = target.maxhp = target.hp = stats.hp;
+			target.baseStoredStats = stats;
+			for (const stat in target.storedStats) target.storedStats[stat] = stats[stat];
+			target.speed = target.storedStats.spe;
+		}
 		if (set.types) target.setType(set.types, true);
 		if (set.tera) {
 			if (typeof set.tera === 'string') target.teraType = battle.dex.types.get(set.tera).name;

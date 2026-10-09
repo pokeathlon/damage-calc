@@ -81,7 +81,7 @@ function dump(mod, client) {
 	const formes = {};
 	for (const specie of dex.species.all()) {
 		if (!specie.exists || EXCLUDED.includes(specie.isNonstandard) || specie.forme.endsWith('Gmax')) continue;
-		const base = dex.species.get(specie.baseSpecies);
+		const base = dex.species.get(specie.baseSpecies === specie.name && specie.battleOnly || specie.baseSpecies);
 		if (specie.name === base.name || base.cosmeticFormes?.includes(specie.name)) continue;
 		(formes[base.name] || (formes[base.name] = [])).push(specie.name);
 	}
