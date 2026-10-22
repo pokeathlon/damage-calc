@@ -77,16 +77,18 @@ async function loadClient() {
 
 function dump(mod, client) {
 	const dex = Dex.mod(mod);
+	const excluded = EXCLUDED.filter(tag => tag !== 'CAP' ||
+		!formats.some(format => format.mod === mod && Dex.formats.getRuleTable(format).has('+tag:cap')));
 	const species = {};
 	const formes = {};
 	for (const specie of dex.species.all()) {
-		if (!specie.exists || EXCLUDED.includes(specie.isNonstandard) || specie.forme.endsWith('Gmax')) continue;
+		if (!specie.exists || excluded.includes(specie.isNonstandard) || specie.forme.endsWith('Gmax')) continue;
 		const base = dex.species.get(specie.baseSpecies === specie.name && specie.battleOnly || specie.baseSpecies);
 		if (specie.name === base.name || base.cosmeticFormes?.includes(specie.name)) continue;
 		(formes[base.name] || (formes[base.name] = [])).push(specie.name);
 	}
 	for (const specie of dex.species.all()) {
-		if (!specie.exists || EXCLUDED.includes(specie.isNonstandard)) continue;
+		if (!specie.exists || excluded.includes(specie.isNonstandard)) continue;
 		const data = {types: specie.types, bs: {}, weightkg: specie.weightkg};
 		for (const stat in STATS) data.bs[STATS[stat]] = specie.baseStats[stat];
 		if (specie.nfe) data.nfe = true;
@@ -95,14 +97,14 @@ function dump(mod, client) {
 		if (specie.canGigantamax) data.canGigantamax = specie.canGigantamax;
 		if (specie.baseSpecies !== specie.name) data.baseSpecies = specie.baseSpecies;
 		const otherFormes = [...new Set([...specie.otherFormes || [], ...formes[specie.name] || []])]
-			.filter(forme => !EXCLUDED.includes(dex.species.get(forme).isNonstandard));
+			.filter(forme => !excluded.includes(dex.species.get(forme).isNonstandard));
 		if (otherFormes.length) data.otherFormes = otherFormes;
 		data.icon = client.Dex.getPokemonIcon(specie.name);
 		species[specie.name] = data;
 	}
 	const moves = {'(No Move)': {bp: 0, category: 'Status', type: 'Normal'}};
 	for (const move of dex.moves.all()) {
-		if (!move.exists || EXCLUDED.includes(move.isNonstandard) || move.realMove) continue;
+		if (!move.exists || excluded.includes(move.isNonstandard) || move.realMove) continue;
 		const data = {bp: move.basePower, type: move.type, category: move.category};
 		for (const key of MOVE_KEYS) {
 			if (move[key] !== undefined && move[key] !== false) data[key] = move[key];
@@ -120,7 +122,7 @@ function dump(mod, client) {
 	const items = {};
 	const text = dex.loadTextData().Items;
 	for (const item of dex.items.all()) {
-		if (!item.exists || EXCLUDED.includes(item.isNonstandard)) continue;
+		if (!item.exists || excluded.includes(item.isNonstandard)) continue;
 		const data = {};
 		const desc = item.shortDesc || text[item.id]?.shortDesc || '';
 		const typeBoost = /^Holder's (?:first successful )?(\w+)-type attacks? (?:will )?have 1\.\d[x\u00d7] power/.exec(desc);
@@ -135,7 +137,7 @@ function dump(mod, client) {
 		items[item.name] = data;
 	}
 	const abilities = dex.abilities.all()
-		.filter(ability => ability.exists && !EXCLUDED.includes(ability.isNonstandard) && ability.id !== 'noability')
+		.filter(ability => ability.exists && !excluded.includes(ability.isNonstandard) && ability.id !== 'noability')
 		.map(ability => ability.name);
 	const used = new Set([...Object.values(species).flatMap(specie => specie.types), ...Object.values(moves).map(move => move.type)]);
 	const types = dex.types.all().filter(type => type.exists && (!type.isNonstandard || used.has(type.name)));
